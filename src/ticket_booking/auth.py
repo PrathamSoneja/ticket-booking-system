@@ -20,7 +20,7 @@ class Session:
 
 
 class AuthService:
-    SALT = b"ticket-booking-demo-v1"
+    _SALT = b"ticket-booking-demo-v1"
 
     def __init__(self, credentials: dict[str, str] | None = None, ttl: timedelta = timedelta(hours=1)):
         credentials = credentials or {"alice": "wonderland", "bob": "builder"}
