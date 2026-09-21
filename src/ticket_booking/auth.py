@@ -1,7 +1,3 @@
-"""Small in-memory authentication service for the M1 single-node system."""
-
-from __future__ import annotations
-
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import pbkdf2_hmac
@@ -24,12 +20,9 @@ class Session:
 
 
 class AuthService:
-    """Keeps credentials as derived values and sessions as short-lived opaque tokens."""
-
-    _SALT = b"ticket-booking-demo-v1"
+    SALT = b"ticket-booking-demo-v1"
 
     def __init__(self, credentials: dict[str, str] | None = None, ttl: timedelta = timedelta(hours=1)):
-        # Demo-only seeded accounts; callers can supply a real credential source later.
         credentials = credentials or {"alice": "wonderland", "bob": "builder"}
         self._credentials = {name: self._derive(password) for name, password in credentials.items()}
         self._sessions: dict[str, Session] = {}
@@ -38,7 +31,7 @@ class AuthService:
 
     @classmethod
     def _derive(cls, password: str) -> bytes:
-        return pbkdf2_hmac("sha256", password.encode("utf-8"), cls._SALT, 200_000)
+        return pbkdf2_hmac("sha256", password.encode(), cls._SALT, 200_000)
 
     def login(self, username: str, password: str, now: datetime | None = None) -> LoginResult:
         expected = self._credentials.get(username)
@@ -47,8 +40,8 @@ class AuthService:
         now = now or datetime.now(UTC)
         token = token_urlsafe(32)
         with self._lock:
-            self._sessions[token] = Session(user_id=username, expires_at=now + self._ttl)
-        return LoginResult("OK", token=token, message="Logged in.")
+            self._sessions[token] = Session(username, now + self._ttl)
+        return LoginResult("OK", token, "Logged in.")
 
     def logout(self, token: str) -> bool:
         with self._lock:

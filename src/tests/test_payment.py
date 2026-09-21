@@ -1,6 +1,5 @@
-"""Unit tests for deterministic mock payment engine (FR-BOOK-5)."""
 
-from __future__ import annotations
+
 
 from ticket_booking.payment import PaymentGateway
 
@@ -46,3 +45,5 @@ def test_payment_refund() -> None:
     replay = gateway.refund_payment(pay_res.transaction_id)
     assert replay.transaction_id == refund_res.transaction_id
     assert gateway.refund_payment("tx_unknown").status == "NOT_FOUND"
+
+

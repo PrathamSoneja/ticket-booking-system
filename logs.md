@@ -32,3 +32,12 @@ Implemented `server.py` bridging gRPC ClientService with TicketApplication and P
 
 ## 2026-09-11 00:55 — M1 review against SRS (Cursor)
 Reviewed M1 code against `SRS_Distributed_Ticket_Booking_System.md`. Corrected three logic gaps: (1) mock payment ran before the seat lock, so concurrent losers were charged; payment now runs only after the seat is known available, inside the state-machine lock, via leader `process_business_request`. (2) Clients called the LLM node directly; FAQ now goes through authenticated `get(token, "FAQ")` on the app server, which is the only caller of `GetLLMAnswer`, and live seat maps are injected for availability questions. (3) Successful cancel now issues an idempotent mock refund; declined cards no longer invent refunds for unknown `tx_` ids. Verified 27 tests in `.venv`.
+
+## 2026-09-19 — TASK-M1-REFACTOR-1 (started)
+Refactoring M1 source for a smaller, conventional structure without changing auth, booking, payment, or client-routing behavior. The user requested removal of the local LLM fallback; unavailable Ollama will now surface an explicit gRPC unavailable status instead of synthesizing a local answer.
+
+## 2026-09-19 — TASK-M1-REFACTOR-1 (completed pending local test execution)
+Removed source comments, docstrings, unused client LLM configuration, and the local LLM response fallback. Booking, payment, cancellation, auth, redirection, FAQ routing, and generated gRPC contracts were retained; tests now use an injected model response rather than a production fallback. Test execution could not be repeated in this session because the supplied virtual environment's base Python executable remains inaccessible here.
+
+## 2026-09-19 — TASK-M1-REFACTOR-1 (test fix)
+User test run found FAQ text being incorrectly decoded as JSON by the generic client GET helper. FAQ now returns its text through the existing response message without attempting item JSON decoding.

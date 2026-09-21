@@ -1,6 +1,5 @@
-"""Test generated gRPC and protobuf modules."""
 
-from __future__ import annotations
+
 
 import sys
 from pathlib import Path
@@ -24,3 +23,5 @@ def test_protobuf_imports() -> None:
     assert hasattr(ticket_booking_pb2_grpc, "ClientServiceServicer")
     assert hasattr(ticket_booking_pb2_grpc, "RaftServiceServicer")
     assert hasattr(ticket_booking_pb2_grpc, "LLMServiceServicer")
+
+

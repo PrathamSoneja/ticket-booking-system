@@ -1,6 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
-
 from ticket_booking.application import TicketApplication
 from ticket_booking.payment import PaymentGateway
 

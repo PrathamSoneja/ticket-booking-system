@@ -1,7 +1,3 @@
-"""Generate Python protobuf and gRPC modules from the canonical contract."""
-
-from __future__ import annotations
-
 from pathlib import Path
 
 from grpc_tools import protoc
@@ -26,3 +22,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
