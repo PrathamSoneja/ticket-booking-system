@@ -44,7 +44,7 @@ python -m pytest
 2. `ollama pull llama3.2:1b`
 3. Leave Ollama running.
 
-If Ollama is down, FAQ calls return `LLM_UNAVAILABLE`. Tests stub the model and do not need Ollama.
+If Ollama is down or the model returns no text, FAQ calls return `LLM_UNAVAILABLE` and LLM tests fail.
 
 ### Start the servers, then the client
 

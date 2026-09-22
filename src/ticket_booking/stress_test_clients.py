@@ -3,7 +3,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from uuid import uuid4
 
-from .client import TicketClient
+from .client import Client
 
 USERS = [("alice", "wonderland"), ("bob", "builder")]
 i = 1
@@ -13,7 +13,7 @@ while i <= 32:
 
 
 def browse_worker(server_addr, uname, pw):
-    c = TicketClient(server_addr)
+    c = Client(server_addr)
     ok, msg = c.login(uname, pw)
     if not ok:
         c.close()
@@ -25,23 +25,23 @@ def browse_worker(server_addr, uname, pw):
 
 
 def race_for_same_seat_worker(server_addr, uname, pw, show_id, seat_id):
-    c = TicketClient(server_addr)
+    c = Client(server_addr)
     ok, msg = c.login(uname, pw)
     if not ok:
         c.close()
         return "LOGIN_FAILED"
-    status, booking_id, message = c.book_seat(show_id, seat_id, request_id=str(uuid4()))
+    status, booking_id, message = c.book_seat(show_id, seat_id, req_id=str(uuid4()))
     c.close()
     return status
 
 
 def retry_same_request_worker(server_addr, uname, pw, show_id, seat_id, shared_req_id):
-    c = TicketClient(server_addr)
+    c = Client(server_addr)
     ok, msg = c.login(uname, pw)
     if not ok:
         c.close()
         return "LOGIN_FAILED"
-    status, booking_id, message = c.book_seat(show_id, seat_id, request_id=shared_req_id)
+    status, booking_id, message = c.book_seat(show_id, seat_id, req_id=shared_req_id)
     c.close()
     return (status, booking_id)
 

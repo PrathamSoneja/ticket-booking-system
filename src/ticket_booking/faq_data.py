@@ -7,68 +7,55 @@ from .seed import catalog
 
 
 @dataclass(frozen=True)
-class FaqTopic:
-    topic_key: str
-    display_title: str
-    trigger_words: tuple
-    body_text: str
+class Topic:
+    key: str
+    title: str
+    words: tuple
+    body: str
 
 
-class FaqSearchEngine:
-    def __init__(self, topic_list=None):
-        if topic_list is not None:
-            self.topic_list = list(topic_list)
+class FaqIndex:
+    def __init__(self, topics=None):
+        if topics is not None:
+            self.topics = list(topics)
         else:
-            self.topic_list = []
+            self.topics = []
             for row in catalog.execute("SELECT topic_key, display_title, trigger_words, body_text FROM faq"):
-                self.topic_list.append(FaqTopic(row[0], row[1], tuple(row[2].split(",")), row[3]))
+                self.topics.append(Topic(row[0], row[1], tuple(row[2].split(",")), row[3]))
 
-    def set_knowledge_base(self, new_topics):
-        self.topic_list = list(new_topics)
+    def set_topics(self, topics):
+        self.topics = list(topics)
 
-    def retrieve(self, user_query, top_k=2):
-        word_set = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", user_query.lower()))
-        stop_word_set = set(stopwords.words("english"))
-        query_words = word_set - stop_word_set
-
-        if not query_words or not self.topic_list:
+    def retrieve(self, query, top_k=2):
+        qset = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", query.lower()))
+        stops = set(stopwords.words("english"))
+        qwords = qset - stops
+        if not qwords or not self.topics:
             return "", []
-
-        query_as_lower = user_query.lower()
-        scored_topics = []
-
-        for topic in self.topic_list:
-            this_score = 0
-            for kw in topic.trigger_words:
-                if kw.lower() in query_as_lower:
-                    this_score = this_score + 10
-
-            title_words = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", topic.display_title.lower())) - stop_word_set
-            this_score = this_score + 3 * len(query_words & title_words)
-
-            body_words = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", topic.body_text.lower())) - stop_word_set
-            this_score = this_score + len(query_words & body_words)
-
-            if this_score:
-                scored_topics.append((this_score, topic))
-
-        scored_topics.sort(key=lambda pair: pair[0], reverse=True)
-
-        top_topics = []
+        scored = []
+        low = query.lower()
+        for t in self.topics:
+            score = 0
+            for kw in t.words:
+                if kw.lower() in low:
+                    score = score + 10
+            title_w = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", t.title.lower())) - stops
+            score = score + 3 * len(qwords & title_w)
+            body_w = set(re.findall(r"\b[a-zA-Z0-9_-]+\b", t.body.lower())) - stops
+            score = score + len(qwords & body_w)
+            if score:
+                scored.append((score, t))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        top = []
         i = 0
-        for score_val, topic_val in scored_topics:
+        for _, t in scored:
             if i >= top_k:
                 break
-            top_topics.append(topic_val)
+            top.append(t)
             i = i + 1
-
-        text_chunks = []
-        id_list = []
-        for t in top_topics:
-            text_chunks.append(f"[{t.display_title}]\n{t.body_text}")
-            id_list.append(t.topic_key)
-
-        return "\n\n".join(text_chunks), id_list
-
-
-FAQRetriever = FaqSearchEngine
+        chunks = []
+        ids = []
+        for t in top:
+            chunks.append(f"[{t.title}]\n{t.body}")
+            ids.append(t.key)
+        return "\n\n".join(chunks), ids

@@ -10,165 +10,150 @@ class Outcome:
     status: str
     message: str
     booking_id: str = ""
-    payment_transaction_id: str = ""
+    txn: str = ""
 
 
 @dataclass
-class SeatInfo:
+class Seat:
     seat_id: str
-    seat_status: str = "AVAILABLE"
-    booked_by_user: str = None
-    linked_booking_id: str = None
+    status: str = "AVAILABLE"
+    owner: str = None
+    booking: str = None
 
 
 @dataclass
-class BookingInfo:
+class Booking:
     booking_id: str
     user_id: str
     show_id: str
     seat_id: str
-    booking_status: str = "CONFIRMED"
-    payment_transaction_id: str = ""
+    status: str = "CONFIRMED"
+    txn: str = ""
 
 
-class BookingStateMachine:
-    def __init__(self, show_data=None, num_seats_per_show=50):
-        if num_seats_per_show < 1:
+class SeatMap:
+    def __init__(self, catalog=None, capacity=50):
+        if capacity < 1:
             raise ValueError("seats_per_show must be positive")
-
-        if show_data:
-            self.show_data = show_data
+        if catalog:
+            self.catalog = catalog
         else:
-            self.show_data = loaded_shows
-
-        self.seat_data = {}
-        self.seat_locks = {}
-        for show_key in self.show_data:
-            seats_for_this_show = {}
+            self.catalog = loaded_shows
+        self.grid = {}
+        self.locks = {}
+        for show in self.catalog:
+            row = {}
             i = 1
-            while i <= num_seats_per_show:
-                seat_key = f"A{i}"
-                seats_for_this_show[seat_key] = SeatInfo(seat_key)
-                self.seat_locks[show_key + "/" + seat_key] = Lock()
+            while i <= capacity:
+                key = f"A{i}"
+                row[key] = Seat(key)
+                self.locks[show + "/" + key] = Lock()
                 i = i + 1
-            self.seat_data[show_key] = seats_for_this_show
-
-        self.booking_records = {}
-        self.past_outcomes = {}
-        self.data_lock = Lock()
-        self.lock_box = Lock()
+            self.grid[show] = row
+        self.bookings = {}
+        self.seen = {}
+        self.lock = Lock()
+        self.box = Lock()
 
     def shows(self):
-        result_list = []
-        for show_key, show_val in self.show_data.items():
-            merged = {"show_id": show_key}
-            merged.update(show_val)
-            result_list.append(merged)
-        return result_list
+        out = []
+        for sid, info in self.catalog.items():
+            row = {"show_id": sid}
+            row.update(info)
+            out.append(row)
+        return out
 
     def seats(self, show_id):
-        seats_here = self.seat_data.get(show_id)
-        if seats_here is None:
+        here = self.grid.get(show_id)
+        if here is None:
             return None
-        out_list = []
-        for s in seats_here.values():
-            out_list.append({"seat_id": s.seat_id, "status": s.seat_status})
-        return out_list
+        out = []
+        for s in here.values():
+            out.append({"seat_id": s.seat_id, "status": s.status})
+        return out
 
-    def book(self, user_id, show_id, seat_id, req_id, charge_fn=None):
-        self.data_lock.acquire()
-        already = self.past_outcomes.get(req_id)
-        self.data_lock.release()
+    def book(self, user_id, show_id, seat_id, req_id, pay=None):
+        self.lock.acquire()
+        already = self.seen.get(req_id)
+        self.lock.release()
         if already:
             return already
-
         picked = []
         for part in str(seat_id).replace(";", ",").split(","):
             bit = part.strip()
             if bit != "" and bit not in picked:
                 picked.append(bit)
-
         if len(picked) > 5:
             out = Outcome("INVALID_REQUEST", "You can book at most 5 seats in one session.")
-            self.data_lock.acquire()
-            self.past_outcomes[req_id] = out
-            self.data_lock.release()
+            self.lock.acquire()
+            self.seen[req_id] = out
+            self.lock.release()
             return out
-
         if not picked:
             out = Outcome("NOT_FOUND", "Show or seat does not exist.")
-            self.data_lock.acquire()
-            self.past_outcomes[req_id] = out
-            self.data_lock.release()
+            self.lock.acquire()
+            self.seen[req_id] = out
+            self.lock.release()
             return out
-
-        show_seats = self.seat_data.get(show_id, {})
-        lock_keys = []
+        show_seats = self.grid.get(show_id, {})
+        keys = []
         for s in picked:
-            lock_keys.append(show_id + "/" + s)
-        lock_keys.sort()
-
+            keys.append(show_id + "/" + s)
+        keys.sort()
         held = []
-        self.lock_box.acquire()
+        self.box.acquire()
         wanted = []
-        for k in lock_keys:
-            if k not in self.seat_locks:
-                self.seat_locks[k] = Lock()
-            wanted.append(self.seat_locks[k])
-        self.lock_box.release()
+        for k in keys:
+            if k not in self.locks:
+                self.locks[k] = Lock()
+            wanted.append(self.locks[k])
+        self.box.release()
         for L in wanted:
             L.acquire()
             held.append(L)
         try:
-            self.data_lock.acquire()
-            already = self.past_outcomes.get(req_id)
-            self.data_lock.release()
+            self.lock.acquire()
+            already = self.seen.get(req_id)
+            self.lock.release()
             if already:
                 return already
-
             targets = []
             for s in picked:
                 one = show_seats.get(s)
                 if one is None:
                     out = Outcome("NOT_FOUND", "Show or seat does not exist.")
-                    self.data_lock.acquire()
-                    self.past_outcomes[req_id] = out
-                    self.data_lock.release()
+                    self.lock.acquire()
+                    self.seen[req_id] = out
+                    self.lock.release()
                     return out
                 targets.append(one)
-
             for one in targets:
-                if one.seat_status == "BOOKED":
+                if one.status == "BOOKED":
                     out = Outcome("ALREADY_BOOKED", "This seat is already booked.")
-                    self.data_lock.acquire()
-                    self.past_outcomes[req_id] = out
-                    self.data_lock.release()
+                    self.lock.acquire()
+                    self.seen[req_id] = out
+                    self.lock.release()
                     return out
-
-            txn_id_val = ""
-            if charge_fn:
-                pay_status, pay_msg, txn_id_val = charge_fn()
+            txn = ""
+            if pay:
+                pay_status, pay_msg, txn = pay()
                 if pay_status != "SUCCESS":
                     out = Outcome(pay_status, pay_msg)
-                    self.data_lock.acquire()
-                    self.past_outcomes[req_id] = out
-                    self.data_lock.release()
+                    self.lock.acquire()
+                    self.seen[req_id] = out
+                    self.lock.release()
                     return out
-
-            new_booking_id = str(uuid5(NAMESPACE_URL, f"ticket-booking/{req_id}"))
+            bid = str(uuid5(NAMESPACE_URL, f"ticket-booking/{req_id}"))
             joined = ",".join(picked)
             for one in targets:
-                one.seat_status = "BOOKED"
-                one.booked_by_user = user_id
-                one.linked_booking_id = new_booking_id
-
-            self.data_lock.acquire()
-            self.booking_records[new_booking_id] = BookingInfo(
-                new_booking_id, user_id, show_id, joined, payment_transaction_id=txn_id_val
-            )
-            out = Outcome("OK", "Booking confirmed.", new_booking_id, txn_id_val)
-            self.past_outcomes[req_id] = out
-            self.data_lock.release()
+                one.status = "BOOKED"
+                one.owner = user_id
+                one.booking = bid
+            self.lock.acquire()
+            self.bookings[bid] = Booking(bid, user_id, show_id, joined, txn=txn)
+            out = Outcome("OK", "Booking confirmed.", bid, txn)
+            self.seen[req_id] = out
+            self.lock.release()
             return out
         finally:
             i = len(held) - 1
@@ -177,82 +162,70 @@ class BookingStateMachine:
                 i = i - 1
 
     def cancel(self, user_id, booking_id, req_id):
-        self.data_lock.acquire()
-        already = self.past_outcomes.get(req_id)
-        self.data_lock.release()
+        self.lock.acquire()
+        already = self.seen.get(req_id)
+        self.lock.release()
         if already:
             return already
-
-        self.data_lock.acquire()
-        the_booking = self.booking_records.get(booking_id)
-        self.data_lock.release()
-        if the_booking is None:
+        self.lock.acquire()
+        rec = self.bookings.get(booking_id)
+        self.lock.release()
+        if rec is None:
             out = Outcome("NOT_FOUND", "Booking does not exist.")
-            self.data_lock.acquire()
-            self.past_outcomes[req_id] = out
-            self.data_lock.release()
+            self.lock.acquire()
+            self.seen[req_id] = out
+            self.lock.release()
             return out
-
-        if the_booking.user_id != user_id:
+        if rec.user_id != user_id:
             out = Outcome("FORBIDDEN", "Booking belongs to another user.")
-            self.data_lock.acquire()
-            self.past_outcomes[req_id] = out
-            self.data_lock.release()
+            self.lock.acquire()
+            self.seen[req_id] = out
+            self.lock.release()
             return out
-
         picked = []
-        for part in the_booking.seat_id.split(","):
+        for part in rec.seat_id.split(","):
             bit = part.strip()
             if bit != "":
                 picked.append(bit)
-
-        lock_keys = []
+        keys = []
         for s in picked:
-            lock_keys.append(the_booking.show_id + "/" + s)
-        lock_keys.sort()
+            keys.append(rec.show_id + "/" + s)
+        keys.sort()
         held = []
-        self.lock_box.acquire()
+        self.box.acquire()
         wanted = []
-        for k in lock_keys:
-            if k not in self.seat_locks:
-                self.seat_locks[k] = Lock()
-            wanted.append(self.seat_locks[k])
-        self.lock_box.release()
+        for k in keys:
+            if k not in self.locks:
+                self.locks[k] = Lock()
+            wanted.append(self.locks[k])
+        self.box.release()
         for L in wanted:
             L.acquire()
             held.append(L)
         try:
-            self.data_lock.acquire()
-            already = self.past_outcomes.get(req_id)
+            self.lock.acquire()
+            already = self.seen.get(req_id)
             if already:
-                self.data_lock.release()
+                self.lock.release()
                 return already
-            the_booking = self.booking_records.get(booking_id)
-            self.data_lock.release()
-
-            if the_booking.booking_status == "CANCELLED":
-                out = Outcome(
-                    "ALREADY_CANCELLED",
-                    "Booking is already cancelled.",
-                    booking_id,
-                    the_booking.payment_transaction_id,
-                )
-                self.data_lock.acquire()
-                self.past_outcomes[req_id] = out
-                self.data_lock.release()
+            rec = self.bookings.get(booking_id)
+            self.lock.release()
+            if rec.status == "CANCELLED":
+                out = Outcome("ALREADY_CANCELLED", "Booking is already cancelled.", booking_id, rec.txn)
+                self.lock.acquire()
+                self.seen[req_id] = out
+                self.lock.release()
                 return out
-
             for s in picked:
-                related_seat = self.seat_data[the_booking.show_id][s]
-                related_seat.seat_status = "AVAILABLE"
-                related_seat.booked_by_user = None
-                related_seat.linked_booking_id = None
-            the_booking.booking_status = "CANCELLED"
-
-            out = Outcome("OK", "Booking cancelled.", booking_id, the_booking.payment_transaction_id)
-            self.data_lock.acquire()
-            self.past_outcomes[req_id] = out
-            self.data_lock.release()
+                one = self.grid[rec.show_id][s]
+                one.status = "AVAILABLE"
+                one.owner = None
+                one.booking = None
+            rec.status = "CANCELLED"
+            out = Outcome("OK", "Booking cancelled.", booking_id, rec.txn)
+            self.lock.acquire()
+            self.seen[req_id] = out
+            self.lock.release()
             return out
         finally:
             i = len(held) - 1

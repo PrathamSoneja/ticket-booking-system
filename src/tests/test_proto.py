@@ -7,7 +7,7 @@ if str(GENERATED_DIR) not in sys.path:
     sys.path.insert(0, str(GENERATED_DIR))
 
 
-def test_protobuf_imports() -> None:
+def test_proto_import() -> None:
     import ticket_booking_pb2
     import ticket_booking_pb2_grpc
 

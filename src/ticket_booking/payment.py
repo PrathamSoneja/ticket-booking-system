@@ -4,80 +4,72 @@ from uuid import uuid4
 
 
 @dataclass(frozen=True)
-class PaymentResultInfo:
-    status_txt: str
-    txn_id: str = ""
-    charged_amount: float = 0.0
-    info_message: str = ""
+class PayResult:
+    status: str
+    txn: str = ""
+    amount: float = 0.0
+    message: str = ""
 
 
-class PaymentGateway:
-    def __init__(self, ticket_price_default=50.0):
-        self.ticket_price_default = ticket_price_default
-        self.my_lock = Lock()
-        self.done_payments_by_key = {}
-        self.done_refunds_by_txn = {}
-        self.txn_lookup = {}
+class Payments:
+    def __init__(self, price=50.0):
+        self.price = price
+        self.lock = Lock()
+        self.charges = {}
+        self.refunds = {}
+        self.txns = {}
 
-    def successful_charge_count(self):
-        self.my_lock.acquire()
+    def charge_count(self):
+        self.lock.acquire()
         cnt = 0
-        for v in self.done_payments_by_key.values():
-            if v.status_txt == "SUCCESS":
+        for v in self.charges.values():
+            if v.status == "SUCCESS":
                 cnt = cnt + 1
-        self.my_lock.release()
+        self.lock.release()
         return cnt
 
-    def process_payment(self, whos_paying, pay_amount=None, card_num="4242424242424242", idempotency_key=None):
-        self.my_lock.acquire()
+    def charge(self, user, amount=None, card="4242424242424242", req_id=None):
+        self.lock.acquire()
         try:
-            if idempotency_key and idempotency_key in self.done_payments_by_key:
-                return self.done_payments_by_key[idempotency_key]
-
-            if pay_amount is None:
-                final_cost = self.ticket_price_default
+            if req_id and req_id in self.charges:
+                return self.charges[req_id]
+            if amount is None:
+                cost = self.price
             else:
-                final_cost = pay_amount
-
-            clean_card = card_num.replace(" ", "").replace("-", "")
-
-            if final_cost <= 0:
-                new_result = PaymentResultInfo("INVALID_AMOUNT", charged_amount=final_cost, info_message="Payment amount must be greater than zero.")
-            elif clean_card.startswith("0000") or clean_card.endswith("0000"):
-                new_result = PaymentResultInfo("PAYMENT_FAILED", charged_amount=final_cost, info_message="Card declined by mock payment issuer.")
+                cost = amount
+            clean = card.replace(" ", "").replace("-", "")
+            if cost <= 0:
+                out = PayResult("INVALID_AMOUNT", amount=cost, message="Payment amount must be greater than zero.")
+            elif clean.startswith("0000") or clean.endswith("0000"):
+                out = PayResult("PAYMENT_FAILED", amount=cost, message="Card declined by mock payment issuer.")
             else:
-                new_txn_id = f"tx_{uuid4().hex[:12]}"
-                new_result = PaymentResultInfo("SUCCESS", new_txn_id, final_cost, "Payment processed successfully.")
-                self.txn_lookup[new_txn_id] = new_result
-
-            if idempotency_key:
-                self.done_payments_by_key[idempotency_key] = new_result
-
-            return new_result
+                txn = f"tx_{uuid4().hex[:12]}"
+                out = PayResult("SUCCESS", txn, cost, "Payment processed successfully.")
+                self.txns[txn] = out
+            if req_id:
+                self.charges[req_id] = out
+            return out
         finally:
-            self.my_lock.release()
+            self.lock.release()
 
-    def refund_payment(self, txn_id):
-        self.my_lock.acquire()
+    def refund(self, txn):
+        self.lock.acquire()
         try:
-            if not txn_id:
-                return PaymentResultInfo("NOT_FOUND", info_message="No payment transaction to refund.")
-
-            already_done = self.done_refunds_by_txn.get(txn_id)
-            if already_done:
-                return already_done
-
-            original_payment = self.txn_lookup.get(txn_id)
-            if original_payment is None:
-                return PaymentResultInfo("NOT_FOUND", info_message=f"Transaction {txn_id} not found.")
-
-            refund_res = PaymentResultInfo(
+            if not txn:
+                return PayResult("NOT_FOUND", message="No payment transaction to refund.")
+            already = self.refunds.get(txn)
+            if already:
+                return already
+            original = self.txns.get(txn)
+            if original is None:
+                return PayResult("NOT_FOUND", message=f"Transaction {txn} not found.")
+            out = PayResult(
                 "SUCCESS",
                 f"ref_{uuid4().hex[:12]}",
-                original_payment.charged_amount,
-                f"Refund of ${original_payment.charged_amount:.2f} processed for transaction {txn_id}.",
+                original.amount,
+                f"Refund of ${original.amount:.2f} processed for transaction {txn}.",
             )
-            self.done_refunds_by_txn[txn_id] = refund_res
-            return refund_res
+            self.refunds[txn] = out
+            return out
         finally:
-            self.my_lock.release()
+            self.lock.release()

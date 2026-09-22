@@ -7,62 +7,54 @@ from threading import Lock
 
 
 @dataclass(frozen=True)
-class LoginResultData:
-    status_code: str
-    session_token: str = ""
-    info_msg: str = ""
+class AuthResult:
+    status: str
+    token: str = ""
+    message: str = ""
 
 
 @dataclass(frozen=True)
-class ActiveUserSession:
-    who_logged_in: str
-    session_dies_at: datetime
+class Session:
+    user: str
+    expiry: datetime
 
 
-class UserLoginManager:
-    SALT_VALUE = b"ticket-booking-demo-v1"
+class Auth:
+    SALT = b"ticket-booking-demo-v1"
 
-    def __init__(self, user_pass_dict=None, session_valid_time=timedelta(hours=1)):
-        if user_pass_dict == None:
-            user_pass_dict = {"alice": "wonderland", "bob": "builder"}
+    def __init__(self, users=None, lifetime=timedelta(hours=1)):
+        if users == None:
+            users = {"alice": "wonderland", "bob": "builder"}
             n = 1
             while n <= 32:
-                user_pass_dict["user" + str(n)] = "pass" + str(n)
+                users["user" + str(n)] = "pass" + str(n)
                 n = n + 1
+        self.hashes = {}
+        for uname in users:
+            self.hashes[uname] = pbkdf2_hmac("sha256", users[uname].encode(), self.SALT, 200_000)
+        self.sessions = {}
+        self.lifetime = lifetime
+        self.lock = Lock()
 
-        self.saved_password_hashes = {}
-        for uname in user_pass_dict:
-            raw_pw = user_pass_dict[uname]
-            hashed = pbkdf2_hmac("sha256", raw_pw.encode(), self.SALT_VALUE, 200_000)
-            self.saved_password_hashes[uname] = hashed
+    def login(self, uname, pw, now=None):
+        stored = self.hashes.get(uname)
+        check = pbkdf2_hmac("sha256", pw.encode(), self.SALT, 200_000)
+        if stored is None:
+            return AuthResult("AUTH_FAILED", message="Invalid username or password.")
+        if not compare_digest(stored, check):
+            return AuthResult("AUTH_FAILED", message="Invalid username or password.")
+        if now == None:
+            now = datetime.now(UTC)
+        tok = token_urlsafe(32)
+        self.lock.acquire()
+        self.sessions[tok] = Session(uname, now + self.lifetime)
+        self.lock.release()
+        return AuthResult("OK", tok, "Logged in.")
 
-        self.all_sessions = {}
-        self.session_valid_time = session_valid_time
-        self.big_lock = Lock()
-
-    def login(self, uname, pw, right_now=None):
-        stored_hash = self.saved_password_hashes.get(uname)
-        pw_hash_check = pbkdf2_hmac("sha256", pw.encode(), self.SALT_VALUE, 200_000)
-
-        if stored_hash is None:
-            return LoginResultData("AUTH_FAILED", info_msg="Invalid username or password.")
-        if not compare_digest(stored_hash, pw_hash_check):
-            return LoginResultData("AUTH_FAILED", info_msg="Invalid username or password.")
-
-        if right_now == None:
-            right_now = datetime.now(UTC)
-
-        new_tok = token_urlsafe(32)
-        self.big_lock.acquire()
-        self.all_sessions[new_tok] = ActiveUserSession(uname, right_now + self.session_valid_time)
-        self.big_lock.release()
-
-        return LoginResultData("OK", new_tok, "Logged in.")
-
-    def signup(self, uname, pw, right_now=None):
+    def signup(self, uname, pw, now=None):
         name = str(uname).strip()
         if len(name) < 3 or len(name) > 20:
-            return LoginResultData("INVALID_REQUEST", info_msg="Username must be 3 to 20 characters.")
+            return AuthResult("INVALID_REQUEST", message="Username must be 3 to 20 characters.")
         i = 0
         bad = False
         while i < len(name):
@@ -71,9 +63,9 @@ class UserLoginManager:
                 bad = True
             i = i + 1
         if bad:
-            return LoginResultData("INVALID_REQUEST", info_msg="Username can only use letters, numbers, and underscore.")
+            return AuthResult("INVALID_REQUEST", message="Username can only use letters, numbers, and underscore.")
         if len(pw) < 8:
-            return LoginResultData("WEAK_PASSWORD", info_msg="Password must be at least 8 characters.")
+            return AuthResult("WEAK_PASSWORD", message="Password must be at least 8 characters.")
         has_letter = False
         has_digit = False
         j = 0
@@ -84,42 +76,36 @@ class UserLoginManager:
                 has_digit = True
             j = j + 1
         if not has_letter or not has_digit:
-            return LoginResultData("WEAK_PASSWORD", info_msg="Password must include letters and numbers.")
-
-        self.big_lock.acquire()
+            return AuthResult("WEAK_PASSWORD", message="Password must include letters and numbers.")
+        self.lock.acquire()
         taken = False
-        for k in self.saved_password_hashes:
+        for k in self.hashes:
             if k.lower() == name.lower():
                 taken = True
         if taken:
-            self.big_lock.release()
-            return LoginResultData("USERNAME_TAKEN", info_msg="That username is already registered.")
-        hashed = pbkdf2_hmac("sha256", pw.encode(), self.SALT_VALUE, 200_000)
-        self.saved_password_hashes[name] = hashed
-        self.big_lock.release()
-        return self.login(name, pw, right_now)
+            self.lock.release()
+            return AuthResult("USERNAME_TAKEN", message="That username is already registered.")
+        self.hashes[name] = pbkdf2_hmac("sha256", pw.encode(), self.SALT, 200_000)
+        self.lock.release()
+        return self.login(name, pw, now)
 
     def logout(self, tok):
-        self.big_lock.acquire()
-        found_something = self.all_sessions.pop(tok, None) is not None
-        self.big_lock.release()
-        return found_something
+        self.lock.acquire()
+        found = self.sessions.pop(tok, None) is not None
+        self.lock.release()
+        return found
 
-    def user_for_token(self, tok, right_now=None):
-        self.big_lock.acquire()
+    def token_user(self, tok, now=None):
+        self.lock.acquire()
         try:
-            sess = self.all_sessions.get(tok)
+            sess = self.sessions.get(tok)
             if sess is None:
                 return None
-
-            time_to_check = right_now
-            if time_to_check == None:
-                time_to_check = datetime.now(UTC)
-
-            if sess.session_dies_at <= time_to_check:
-                self.all_sessions.pop(tok, None)
+            if now == None:
+                now = datetime.now(UTC)
+            if sess.expiry <= now:
+                self.sessions.pop(tok, None)
                 return None
-
-            return sess.who_logged_in
+            return sess.user
         finally:
-            self.big_lock.release()
+            self.lock.release()

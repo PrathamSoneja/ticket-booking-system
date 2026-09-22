@@ -6,125 +6,127 @@ from uuid import uuid4
 
 import grpc
 
-GEN_DIR_PATH = Path(__file__).resolve().parent / "generated"
-if str(GEN_DIR_PATH) not in sys.path:
-    sys.path.insert(0, str(GEN_DIR_PATH))
+GEN = Path(__file__).resolve().parent / "generated"
+if str(GEN) not in sys.path:
+    sys.path.insert(0, str(GEN))
 
 import ticket_booking_pb2 as pb
 import ticket_booking_pb2_grpc as pb_grpc
 
 
-class TicketClient:
-    def __init__(self, server_addr="127.0.0.1:50051"):
-        self.server_addr = server_addr
-        self.my_token = None
-        self.my_username = None
-        self.channel_obj = grpc.insecure_channel(self.server_addr)
-        self.stub_obj = pb_grpc.ClientServiceStub(self.channel_obj)
+class Client:
+    def __init__(self, addr="127.0.0.1:50051"):
+        self.addr = addr
+        self.token = None
+        self.user = None
+        self.channel = grpc.insecure_channel(self.addr)
+        self.stub = pb_grpc.ClientServiceStub(self.channel)
 
     def close(self):
-        if self.channel_obj:
-            self.channel_obj.close()
+        if self.channel:
+            self.channel.close()
 
     def login(self, uname, pw):
-        res = self.stub_obj.Login(pb.LoginRequest(username=uname, password=pw))
+        res = self.stub.Login(pb.LoginRequest(username=uname, password=pw))
         if res.status == "OK":
-            self.my_token = res.token
-            self.my_username = uname
+            self.token = res.token
+            self.user = uname
             return True, f"Login successful as '{uname}'. Token acquired."
         else:
             return False, f"Login failed: {res.message} (status: {res.status})"
 
     def signup(self, uname, pw):
-        res = self.stub_obj.Signup(pb.LoginRequest(username=uname, password=pw))
+        res = self.stub.Signup(pb.LoginRequest(username=uname, password=pw))
         if res.status == "OK":
-            self.my_token = res.token
-            self.my_username = uname
+            self.token = res.token
+            self.user = uname
             return True, f"Signup successful as '{uname}'. Token acquired."
         else:
             return False, f"Signup failed: {res.message} (status: {res.status})"
 
     def logout(self):
-        if not self.my_token:
+        if not self.token:
             return False, "Not logged in."
-        res = self.stub_obj.Logout(pb.LogoutRequest(token=self.my_token))
+        res = self.stub.Logout(pb.LogoutRequest(token=self.token))
         if res.status == "OK":
-            self.my_token = None
-            self.my_username = None
+            self.token = None
+            self.user = None
             return True, "Logout successful."
         else:
             return False, f"Logout failed: {res.message}"
 
     def get_shows(self):
-        if not self.my_token:
+        if not self.token:
             return "AUTH_FAILED", [], "Please log in first."
-        req = pb.GetRequest(token=self.my_token, type="SHOWS", params=json.dumps({}).encode())
-        res = self.stub_obj.Get(req)
-        item_list = [json.loads(it.data.decode()) for it in res.items]
-        return res.status, item_list, res.message
+        res = self.stub.Get(pb.GetRequest(token=self.token, type="SHOWS", params=json.dumps({}).encode()))
+        items = [json.loads(it.data.decode()) for it in res.items]
+        return res.status, items, res.message
 
     def get_seats(self, show_id):
-        if not self.my_token:
+        if not self.token:
             return "AUTH_FAILED", [], "Please log in first."
-        req_data = {"show_id": show_id}
-        req = pb.GetRequest(token=self.my_token, type="SEATS", params=json.dumps(req_data).encode())
-        res = self.stub_obj.Get(req)
-        item_list = [json.loads(it.data.decode()) for it in res.items]
-        return res.status, item_list, res.message
+        res = self.stub.Get(
+            pb.GetRequest(token=self.token, type="SEATS", params=json.dumps({"show_id": show_id}).encode())
+        )
+        items = [json.loads(it.data.decode()) for it in res.items]
+        return res.status, items, res.message
 
-    def book_seat(self, show_id, seat_id, card_number="4242424242424242", amount=50.0, request_id=None, max_redirects=3):
-        if not self.my_token:
+    def book_seat(self, show_id, seat_id, card="4242424242424242", amount=50.0, req_id=None, hops=3):
+        if not self.token:
             return "AUTH_FAILED", "", "Please log in first."
-
-        post_data = {"show_id": show_id, "seat_id": seat_id, "card_number": card_number, "amount": str(amount)}
-        real_req_id = request_id if request_id else str(uuid4())
-
-        tries = 0
-        while tries < max_redirects:
-            req = pb.PostRequest(token=self.my_token, type="BOOK_SEAT", data=json.dumps(post_data).encode(), request_id=real_req_id)
-            res = self.stub_obj.Post(req)
+        body = {"show_id": show_id, "seat_id": seat_id, "card_number": card, "amount": str(amount)}
+        if req_id:
+            rid = req_id
+        else:
+            rid = str(uuid4())
+        n = 0
+        while n < hops:
+            res = self.stub.Post(
+                pb.PostRequest(token=self.token, type="BOOK_SEAT", data=json.dumps(body).encode(), request_id=rid)
+            )
             if res.status != "NOT_LEADER" or not res.redirect_to:
                 return res.status, res.booking_id, res.message
-
-            self.server_addr = res.redirect_to
-            if self.channel_obj:
-                self.channel_obj.close()
-            self.channel_obj = grpc.insecure_channel(self.server_addr)
-            self.stub_obj = pb_grpc.ClientServiceStub(self.channel_obj)
-            tries = tries + 1
-
+            self.addr = res.redirect_to
+            if self.channel:
+                self.channel.close()
+            self.channel = grpc.insecure_channel(self.addr)
+            self.stub = pb_grpc.ClientServiceStub(self.channel)
+            n = n + 1
         return "REDIRECT_FAILED", "", "Exceeded maximum redirect hops to reach cluster leader."
 
-    def cancel_seat(self, booking_id, request_id=None, max_redirects=3):
-        if not self.my_token:
+    def cancel_seat(self, booking_id, req_id=None, hops=3):
+        if not self.token:
             return "AUTH_FAILED", "", "Please log in first."
-
-        post_data = {"booking_id": booking_id}
-        real_req_id = request_id if request_id else str(uuid4())
-
-        tries = 0
-        while tries < max_redirects:
-            req = pb.PostRequest(token=self.my_token, type="CANCEL_SEAT", data=json.dumps(post_data).encode(), request_id=real_req_id)
-            res = self.stub_obj.Post(req)
+        body = {"booking_id": booking_id}
+        if req_id:
+            rid = req_id
+        else:
+            rid = str(uuid4())
+        n = 0
+        while n < hops:
+            res = self.stub.Post(
+                pb.PostRequest(token=self.token, type="CANCEL_SEAT", data=json.dumps(body).encode(), request_id=rid)
+            )
             if res.status != "NOT_LEADER" or not res.redirect_to:
                 return res.status, res.booking_id, res.message
-
-            self.server_addr = res.redirect_to
-            if self.channel_obj:
-                self.channel_obj.close()
-            self.channel_obj = grpc.insecure_channel(self.server_addr)
-            self.stub_obj = pb_grpc.ClientServiceStub(self.channel_obj)
-            tries = tries + 1
-
+            self.addr = res.redirect_to
+            if self.channel:
+                self.channel.close()
+            self.channel = grpc.insecure_channel(self.addr)
+            self.stub = pb_grpc.ClientServiceStub(self.channel)
+            n = n + 1
         return "REDIRECT_FAILED", "", "Exceeded maximum redirect hops to reach cluster leader."
 
-    def ask_faq(self, query_text, context_text="", show_id=""):
-        if not self.my_token:
+    def ask_faq(self, query, context="", show_id=""):
+        if not self.token:
             return f"FAQ failed (AUTH_FAILED): Please log in first."
-
-        req_data = {"query": query_text, "context": context_text, "show_id": show_id}
-        req = pb.GetRequest(token=self.my_token, type="FAQ", params=json.dumps(req_data).encode())
-        res = self.stub_obj.Get(req)
+        res = self.stub.Get(
+            pb.GetRequest(
+                token=self.token,
+                type="FAQ",
+                params=json.dumps({"query": query, "context": context, "show_id": show_id}).encode(),
+            )
+        )
         if res.status == "OK":
             return res.message
         else:
@@ -142,32 +144,28 @@ def main():
     parser.add_argument("--booking-id", default="")
     parser.add_argument("--query", default="How do I cancel a booking?")
     args = parser.parse_args()
-
-    my_client = TicketClient(args.server)
+    c = Client(args.server)
     if args.action == "signup":
-        ok, msg = my_client.signup(args.username, args.password)
+        ok, msg = c.signup(args.username, args.password)
         print(msg)
-        my_client.close()
+        c.close()
         if not ok:
             raise SystemExit(msg)
         return
-
-    login_ok, login_msg = my_client.login(args.username, args.password)
-    if not login_ok:
-        raise SystemExit(login_msg)
-
+    ok, msg = c.login(args.username, args.password)
+    if not ok:
+        raise SystemExit(msg)
     if args.action == "shows":
-        print(my_client.get_shows())
+        print(c.get_shows())
     elif args.action == "seats":
-        print(my_client.get_seats(args.show_id))
+        print(c.get_seats(args.show_id))
     elif args.action == "book":
-        print(my_client.book_seat(args.show_id, args.seat_id))
+        print(c.book_seat(args.show_id, args.seat_id))
     elif args.action == "cancel":
-        print(my_client.cancel_seat(args.booking_id))
+        print(c.cancel_seat(args.booking_id))
     else:
-        print(my_client.ask_faq(args.query, show_id=args.show_id))
-
-    my_client.close()
+        print(c.ask_faq(args.query, show_id=args.show_id))
+    c.close()
 
 
 if __name__ == "__main__":
