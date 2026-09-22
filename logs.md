@@ -50,3 +50,6 @@ Added tests for houseful show, overlapping multi-seat race, 40-connection overlo
 
 ## 2026-09-22 — TASK-AUTH-3
 Added Signup RPC: unique usernames (case-insensitive), password min 8 with letters+digits, PBKDF2 store, auto-login token. No Google SSO.
+
+## 2026-09-22 — TASK-CATALOG-2
+Moved show/FAQ seed rows into `seed.py`; that module writes them into SQLite. `faq_data.py` only searches.

@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from threading import Lock
 from uuid import NAMESPACE_URL, uuid5
 
-from .faq_data import loaded_shows
+from .seed import loaded_shows
 
 
 @dataclass(frozen=True)
