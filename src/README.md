@@ -61,9 +61,11 @@ python -m ticket_booking.server
 Default ports: LLM `50055`, app `50051`. Point the app at a different LLM with `--llm-server host:port`. Run a non-leader app (redirects writes) with `--follower --leader 127.0.0.1:50051 --port 50052`.
 
 ```powershell
+python -m ticket_booking.client --action signup --username charlie --password GoodPass1
 python -m ticket_booking.client --action shows
 python -m ticket_booking.client --action seats --show-id show-1
 python -m ticket_booking.client --action book --show-id show-1 --seat-id A1
+python -m ticket_booking.client --action book --show-id show-1 --seat-id A1,A2,A3
 python -m ticket_booking.client --action cancel --booking-id <id from book>
 python -m ticket_booking.client --action faq --query "How do I cancel a booking?"
 ```

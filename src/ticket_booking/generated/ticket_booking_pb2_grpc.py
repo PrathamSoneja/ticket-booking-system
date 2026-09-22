@@ -39,6 +39,11 @@ class ClientServiceStub:
                 request_serializer=ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginRequest.SerializeToString,
                 response_deserializer=ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginResponse.FromString,
                 _registered_method=True)
+        self.Signup = channel.unary_unary(
+                '/ticketbooking.ClientService/Signup',
+                request_serializer=ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginRequest.SerializeToString,
+                response_deserializer=ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginResponse.FromString,
+                _registered_method=True)
         self.Logout = channel.unary_unary(
                 '/ticketbooking.ClientService/Logout',
                 request_serializer=ticket__booking_dot_generated_dot_ticket__booking__pb2.LogoutRequest.SerializeToString,
@@ -60,6 +65,12 @@ class ClientServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def Login(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Signup(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -88,6 +99,11 @@ def add_ClientServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'Login': grpc.unary_unary_rpc_method_handler(
                     servicer.Login,
+                    request_deserializer=ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginRequest.FromString,
+                    response_serializer=ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginResponse.SerializeToString,
+            ),
+            'Signup': grpc.unary_unary_rpc_method_handler(
+                    servicer.Signup,
                     request_deserializer=ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginRequest.FromString,
                     response_serializer=ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginResponse.SerializeToString,
             ),
@@ -132,6 +148,33 @@ class ClientService:
             request,
             target,
             '/ticketbooking.ClientService/Login',
+            ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginRequest.SerializeToString,
+            ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Signup(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/ticketbooking.ClientService/Signup',
             ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginRequest.SerializeToString,
             ticket__booking_dot_generated_dot_ticket__booking__pb2.LoginResponse.FromString,
             options,

@@ -4,6 +4,7 @@ package ticketbooking;
 
 service ClientService {
   rpc Login(LoginRequest) returns (LoginResponse);
+  rpc Signup(LoginRequest) returns (LoginResponse);
   rpc Logout(LogoutRequest) returns (StatusResponse);
   rpc Post(PostRequest) returns (StatusResponse);
   rpc Get(GetRequest) returns (GetResponse);

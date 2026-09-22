@@ -4,3 +4,6 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
+src/ticket_booking/catalog.db
+src/ticket_booking/catalog.db-wal
+src/ticket_booking/catalog.db-shm

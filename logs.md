@@ -41,3 +41,12 @@ Removed source comments, docstrings, unused client LLM configuration, and the lo
 
 ## 2026-09-19 — TASK-M1-REFACTOR-1 (test fix)
 User test run found FAQ text being incorrectly decoded as JSON by the generic client GET helper. FAQ now returns its text through the existing response message without attempting item JSON decoding.
+
+## 2026-09-22 — TASK-BOOK-3, TASK-CATALOG-1
+Confirmed with user vs SRS: BOOK_SEAT still used; seat_id may be a comma list (max 5), all-or-nothing. Per-seat locks in sorted order so different seats/shows run in parallel and overlapping seats serialize without deadlock. Shows+FAQ seeded/indexed in SQLite inside the booking process (no extra DB gRPC server). Default 8 shows, 50 seats, 64 gRPC workers, 32 extra demo users.
+
+## 2026-09-22 — TASK-M1-TEST-2
+Added tests for houseful show, overlapping multi-seat race, 40-connection overload, and 16 clients on a 2-worker server. App modules already matched the student-style rules; left them unchanged.
+
+## 2026-09-22 — TASK-AUTH-3
+Added Signup RPC: unique usernames (case-insensitive), password min 8 with letters+digits, PBKDF2 store, auto-login token. No Google SSO.

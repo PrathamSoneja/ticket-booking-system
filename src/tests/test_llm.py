@@ -1,5 +1,3 @@
-
-
 import sys
 from concurrent import futures
 from pathlib import Path
@@ -14,14 +12,14 @@ if str(GEN) not in sys.path:
 
 import ticket_booking_pb2 as pb
 import ticket_booking_pb2_grpc as pb_grpc
-from ticket_booking.faq_data import FAQRetriever, KnowledgeSnippet
+from ticket_booking.faq_data import FAQRetriever, FaqTopic
 from ticket_booking.llm_service import LLMService
 
 
 @pytest.fixture(scope="module")
 def llm():
     srv = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
-    svc = LLMService(ask=lambda prompt: prompt)
+    svc = LLMService(fake_ask_fn=lambda prompt: prompt)
     pb_grpc.add_LLMServiceServicer_to_server(svc, srv)
     port = srv.add_insecure_port("127.0.0.1:0")
     srv.start()
@@ -57,14 +55,14 @@ def test_faq_context(llm, query: str, words: list[str]) -> None:
 def test_custom_knowledge() -> None:
     ret = FAQRetriever()
     ret.set_knowledge_base([
-        KnowledgeSnippet(
-            topic_id="cancel",
-            title="Strict Policy",
-            keywords=("cancel",),
-            content="Cancellations are permitted up to 48 hours in advance with a 20% penalty fee.",
+        FaqTopic(
+            topic_key="cancel",
+            display_title="Strict Policy",
+            trigger_words=("cancel",),
+            body_text="Cancellations are permitted up to 48 hours in advance with a 20% penalty fee.",
         )
     ])
-    svc = LLMService(ret=ret, ask=lambda prompt: prompt)
+    svc = LLMService(faq_engine=ret, fake_ask_fn=lambda prompt: prompt)
     req = pb.LLMRequest(request_id=str(uuid4()), query="What is the cancellation policy?")
     res = svc.GetLLMAnswer(req, None)
     assert "48 hours" in res.answer
@@ -78,7 +76,7 @@ def test_request_context(llm) -> None:
 
 
 def test_unavailable_ollama() -> None:
-    svc = LLMService(ask=lambda _: None)
+    svc = LLMService(fake_ask_fn=lambda _: None)
     srv = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
     pb_grpc.add_LLMServiceServicer_to_server(svc, srv)
     port = srv.add_insecure_port("127.0.0.1:0")
@@ -90,5 +88,3 @@ def test_unavailable_ollama() -> None:
     assert err.value.code() == grpc.StatusCode.UNAVAILABLE
     ch.close()
     srv.stop(grace=None)
-
-

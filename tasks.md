@@ -13,6 +13,8 @@
 - [x] TASK-LLM-2 — Add domain FAQ retrieval/context injection and FAQ acceptance tests (FR-LLM-2, FR-LLM-3) [Owner: Antigravity]
 - [x] TASK-CLIENT-1 — Implement a token-aware CLI client with leader redirects and clear status output (FR-AUTH-1, FR-AUTH-3) [Owner: Antigravity]
 - [x] TASK-M1-TEST-1 — Add M1 unit and integration coverage for auth, browsing, booking concurrency, cancellation, and LLM FAQs (M1 testing deliverable) [Owner: Joint / Antigravity]
+- [x] TASK-BOOK-3 — Multi-seat booking (max 5), atomic all-or-nothing, per-seat locks for parallel different seats/shows (FR-BOOK-1, FR-BOOK-2 extension)
+- [x] TASK-CATALOG-1 — Index shows and FAQ into SQLite on booking-server process start; load catalog from that DB
 
 ## M2 — Raft Consensus & Fault Tolerance
 - [ ] TASK-RAFT-1 — Persist Raft currentTerm, votedFor, and append-only log state per node (FR-RAFT-1, FR-RAFT-2) [Owner: Codex]

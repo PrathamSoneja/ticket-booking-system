@@ -1,7 +1,8 @@
-from collections.abc import Callable
 from dataclasses import dataclass
 from threading import Lock
 from uuid import NAMESPACE_URL, uuid5
+
+from .faq_data import loaded_shows
 
 
 @dataclass(frozen=True)
@@ -13,95 +14,248 @@ class Outcome:
 
 
 @dataclass
-class Seat:
+class SeatInfo:
     seat_id: str
-    status: str = "AVAILABLE"
-    booked_by: str | None = None
-    booking_id: str | None = None
+    seat_status: str = "AVAILABLE"
+    booked_by_user: str = None
+    linked_booking_id: str = None
 
 
 @dataclass
-class Booking:
+class BookingInfo:
     booking_id: str
     user_id: str
     show_id: str
     seat_id: str
-    status: str = "CONFIRMED"
+    booking_status: str = "CONFIRMED"
     payment_transaction_id: str = ""
 
 
-SHOWS = {
-    "show-1": {"name": "The Raft Musical", "venue": "Auditorium A", "start_time": "2026-10-01T19:00:00Z"},
-    "show-2": {"name": "Distributed Dreams", "venue": "Auditorium B", "start_time": "2026-10-02T19:00:00Z"},
-}
-
-
 class BookingStateMachine:
-    def __init__(self, shows: dict[str, dict[str, str]] | None = None, seats_per_show: int = 10):
-        if seats_per_show < 1:
+    def __init__(self, show_data=None, num_seats_per_show=50):
+        if num_seats_per_show < 1:
             raise ValueError("seats_per_show must be positive")
-        self._shows = shows or SHOWS
-        self._seats = {
-            show: {f"A{i}": Seat(f"A{i}") for i in range(1, seats_per_show + 1)}
-            for show in self._shows
-        }
-        self._bookings: dict[str, Booking] = {}
-        self._outcomes: dict[str, Outcome] = {}
-        self._lock = Lock()
 
-    def shows(self) -> list[dict[str, str]]:
-        return [{"show_id": key, **value} for key, value in self._shows.items()]
+        if show_data:
+            self.show_data = show_data
+        else:
+            self.show_data = loaded_shows
 
-    def seats(self, show_id: str) -> list[dict[str, str]] | None:
-        seats = self._seats.get(show_id)
-        if seats is None:
+        self.seat_data = {}
+        self.seat_locks = {}
+        for show_key in self.show_data:
+            seats_for_this_show = {}
+            i = 1
+            while i <= num_seats_per_show:
+                seat_key = f"A{i}"
+                seats_for_this_show[seat_key] = SeatInfo(seat_key)
+                self.seat_locks[show_key + "/" + seat_key] = Lock()
+                i = i + 1
+            self.seat_data[show_key] = seats_for_this_show
+
+        self.booking_records = {}
+        self.past_outcomes = {}
+        self.data_lock = Lock()
+        self.lock_box = Lock()
+
+    def shows(self):
+        result_list = []
+        for show_key, show_val in self.show_data.items():
+            merged = {"show_id": show_key}
+            merged.update(show_val)
+            result_list.append(merged)
+        return result_list
+
+    def seats(self, show_id):
+        seats_here = self.seat_data.get(show_id)
+        if seats_here is None:
             return None
-        return [{"seat_id": seat.seat_id, "status": seat.status} for seat in seats.values()]
+        out_list = []
+        for s in seats_here.values():
+            out_list.append({"seat_id": s.seat_id, "status": s.seat_status})
+        return out_list
 
-    def book(
-        self,
-        user_id: str,
-        show_id: str,
-        seat_id: str,
-        request_id: str,
-        charge: Callable[[], tuple[str, str, str]] | None = None,
-    ) -> Outcome:
-        with self._lock:
-            old = self._outcomes.get(request_id)
-            if old:
-                return old
-            seat = self._seats.get(show_id, {}).get(seat_id)
-            if seat is None:
-                return self._save(request_id, Outcome("NOT_FOUND", "Show or seat does not exist."))
-            if seat.status == "BOOKED":
-                return self._save(request_id, Outcome("ALREADY_BOOKED", "This seat is already booked."))
-            tx = ""
-            if charge:
-                status, msg, tx = charge()
-                if status != "SUCCESS":
-                    return self._save(request_id, Outcome(status, msg))
-            booking_id = str(uuid5(NAMESPACE_URL, f"ticket-booking/{request_id}"))
-            seat.status, seat.booked_by, seat.booking_id = "BOOKED", user_id, booking_id
-            self._bookings[booking_id] = Booking(booking_id, user_id, show_id, seat_id, payment_transaction_id=tx)
-            return self._save(request_id, Outcome("OK", "Booking confirmed.", booking_id, tx))
+    def book(self, user_id, show_id, seat_id, req_id, charge_fn=None):
+        self.data_lock.acquire()
+        already = self.past_outcomes.get(req_id)
+        self.data_lock.release()
+        if already:
+            return already
 
-    def cancel(self, user_id: str, booking_id: str, request_id: str) -> Outcome:
-        with self._lock:
-            old = self._outcomes.get(request_id)
-            if old:
-                return old
-            booking = self._bookings.get(booking_id)
-            if booking is None:
-                return self._save(request_id, Outcome("NOT_FOUND", "Booking does not exist."))
-            if booking.user_id != user_id:
-                return self._save(request_id, Outcome("FORBIDDEN", "Booking belongs to another user."))
-            if booking.status == "CANCELLED":
-                return self._save(request_id, Outcome("ALREADY_CANCELLED", "Booking is already cancelled.", booking_id, booking.payment_transaction_id))
-            seat = self._seats[booking.show_id][booking.seat_id]
-            seat.status, seat.booked_by, seat.booking_id = "AVAILABLE", None, None
-            booking.status = "CANCELLED"
-            return self._save(request_id, Outcome("OK", "Booking cancelled.", booking_id, booking.payment_transaction_id))
+        picked = []
+        for part in str(seat_id).replace(";", ",").split(","):
+            bit = part.strip()
+            if bit != "" and bit not in picked:
+                picked.append(bit)
 
-    def _save(self, request_id: str, out: Outcome) -> Outcome:
-        self._outcomes[request_id] = out
-        return out
+        if len(picked) > 5:
+            out = Outcome("INVALID_REQUEST", "You can book at most 5 seats in one session.")
+            self.data_lock.acquire()
+            self.past_outcomes[req_id] = out
+            self.data_lock.release()
+            return out
+
+        if not picked:
+            out = Outcome("NOT_FOUND", "Show or seat does not exist.")
+            self.data_lock.acquire()
+            self.past_outcomes[req_id] = out
+            self.data_lock.release()
+            return out
+
+        show_seats = self.seat_data.get(show_id, {})
+        lock_keys = []
+        for s in picked:
+            lock_keys.append(show_id + "/" + s)
+        lock_keys.sort()
+
+        held = []
+        self.lock_box.acquire()
+        wanted = []
+        for k in lock_keys:
+            if k not in self.seat_locks:
+                self.seat_locks[k] = Lock()
+            wanted.append(self.seat_locks[k])
+        self.lock_box.release()
+        for L in wanted:
+            L.acquire()
+            held.append(L)
+        try:
+            self.data_lock.acquire()
+            already = self.past_outcomes.get(req_id)
+            self.data_lock.release()
+            if already:
+                return already
+
+            targets = []
+            for s in picked:
+                one = show_seats.get(s)
+                if one is None:
+                    out = Outcome("NOT_FOUND", "Show or seat does not exist.")
+                    self.data_lock.acquire()
+                    self.past_outcomes[req_id] = out
+                    self.data_lock.release()
+                    return out
+                targets.append(one)
+
+            for one in targets:
+                if one.seat_status == "BOOKED":
+                    out = Outcome("ALREADY_BOOKED", "This seat is already booked.")
+                    self.data_lock.acquire()
+                    self.past_outcomes[req_id] = out
+                    self.data_lock.release()
+                    return out
+
+            txn_id_val = ""
+            if charge_fn:
+                pay_status, pay_msg, txn_id_val = charge_fn()
+                if pay_status != "SUCCESS":
+                    out = Outcome(pay_status, pay_msg)
+                    self.data_lock.acquire()
+                    self.past_outcomes[req_id] = out
+                    self.data_lock.release()
+                    return out
+
+            new_booking_id = str(uuid5(NAMESPACE_URL, f"ticket-booking/{req_id}"))
+            joined = ",".join(picked)
+            for one in targets:
+                one.seat_status = "BOOKED"
+                one.booked_by_user = user_id
+                one.linked_booking_id = new_booking_id
+
+            self.data_lock.acquire()
+            self.booking_records[new_booking_id] = BookingInfo(
+                new_booking_id, user_id, show_id, joined, payment_transaction_id=txn_id_val
+            )
+            out = Outcome("OK", "Booking confirmed.", new_booking_id, txn_id_val)
+            self.past_outcomes[req_id] = out
+            self.data_lock.release()
+            return out
+        finally:
+            i = len(held) - 1
+            while i >= 0:
+                held[i].release()
+                i = i - 1
+
+    def cancel(self, user_id, booking_id, req_id):
+        self.data_lock.acquire()
+        already = self.past_outcomes.get(req_id)
+        self.data_lock.release()
+        if already:
+            return already
+
+        self.data_lock.acquire()
+        the_booking = self.booking_records.get(booking_id)
+        self.data_lock.release()
+        if the_booking is None:
+            out = Outcome("NOT_FOUND", "Booking does not exist.")
+            self.data_lock.acquire()
+            self.past_outcomes[req_id] = out
+            self.data_lock.release()
+            return out
+
+        if the_booking.user_id != user_id:
+            out = Outcome("FORBIDDEN", "Booking belongs to another user.")
+            self.data_lock.acquire()
+            self.past_outcomes[req_id] = out
+            self.data_lock.release()
+            return out
+
+        picked = []
+        for part in the_booking.seat_id.split(","):
+            bit = part.strip()
+            if bit != "":
+                picked.append(bit)
+
+        lock_keys = []
+        for s in picked:
+            lock_keys.append(the_booking.show_id + "/" + s)
+        lock_keys.sort()
+        held = []
+        self.lock_box.acquire()
+        wanted = []
+        for k in lock_keys:
+            if k not in self.seat_locks:
+                self.seat_locks[k] = Lock()
+            wanted.append(self.seat_locks[k])
+        self.lock_box.release()
+        for L in wanted:
+            L.acquire()
+            held.append(L)
+        try:
+            self.data_lock.acquire()
+            already = self.past_outcomes.get(req_id)
+            if already:
+                self.data_lock.release()
+                return already
+            the_booking = self.booking_records.get(booking_id)
+            self.data_lock.release()
+
+            if the_booking.booking_status == "CANCELLED":
+                out = Outcome(
+                    "ALREADY_CANCELLED",
+                    "Booking is already cancelled.",
+                    booking_id,
+                    the_booking.payment_transaction_id,
+                )
+                self.data_lock.acquire()
+                self.past_outcomes[req_id] = out
+                self.data_lock.release()
+                return out
+
+            for s in picked:
+                related_seat = self.seat_data[the_booking.show_id][s]
+                related_seat.seat_status = "AVAILABLE"
+                related_seat.booked_by_user = None
+                related_seat.linked_booking_id = None
+            the_booking.booking_status = "CANCELLED"
+
+            out = Outcome("OK", "Booking cancelled.", booking_id, the_booking.payment_transaction_id)
+            self.data_lock.acquire()
+            self.past_outcomes[req_id] = out
+            self.data_lock.release()
+            return out
+        finally:
+            i = len(held) - 1
+            while i >= 0:
+                held[i].release()
+                i = i - 1

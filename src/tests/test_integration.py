@@ -1,5 +1,3 @@
-
-
 import sys
 from concurrent import futures
 from concurrent.futures import ThreadPoolExecutor
@@ -13,8 +11,8 @@ if str(GEN) not in sys.path:
     sys.path.insert(0, str(GEN))
 
 import ticket_booking_pb2_grpc as pb_grpc
-from ticket_booking.application import TicketApplication
-from ticket_booking.auth import AuthService
+from ticket_booking.application import BookingAppMain
+from ticket_booking.auth import UserLoginManager
 from ticket_booking.client import TicketClient
 from ticket_booking.llm_service import LLMService
 from ticket_booking.payment import PaymentGateway
@@ -24,15 +22,15 @@ from ticket_booking.state_machine import BookingStateMachine
 
 @pytest.fixture(scope="module")
 def services():
-    auth = AuthService({f"user_{i}": f"pass_{i}" for i in range(20)})
+    auth = UserLoginManager({f"user_{i}": f"pass_{i}" for i in range(20)})
     payment = PaymentGateway(60.0)
-    app = TicketApplication(auth, BookingStateMachine(seats_per_show=10), payment)
+    app = BookingAppMain(auth, BookingStateMachine(num_seats_per_show=10), payment)
     llm = grpc.server(futures.ThreadPoolExecutor(max_workers=5))
-    pb_grpc.add_LLMServiceServicer_to_server(LLMService(ask=lambda prompt: prompt), llm)
+    pb_grpc.add_LLMServiceServicer_to_server(LLMService(fake_ask_fn=lambda prompt: prompt), llm)
     llm_port = llm.add_insecure_port("127.0.0.1:0")
     llm.start()
     srv = grpc.server(futures.ThreadPoolExecutor(max_workers=20))
-    svc = ClientServer(app, payment, llm_address=f"127.0.0.1:{llm_port}")
+    svc = ClientServer(app, payment, llm_addr=f"127.0.0.1:{llm_port}")
     pb_grpc.add_ClientServiceServicer_to_server(svc, srv)
     port = srv.add_insecure_port("127.0.0.1:0")
     srv.start()
@@ -73,10 +71,75 @@ def test_booking_cancellation_and_faq(services) -> None:
     status, booking_id, _ = client.book_seat("show-1", "A5")
     assert status == "OK"
     assert "2 hours" in client.ask_faq("How do I cancel my seat booking?")
-    before = len(payment._refunds_by_tx)
+    before = len(payment.done_refunds_by_txn)
     assert client.cancel_seat(booking_id)[0] == "OK"
-    assert len(payment._refunds_by_tx) == before + 1
+    assert len(payment.done_refunds_by_txn) == before + 1
     assert next(seat for seat in client.get_seats("show-1")[1] if seat["seat_id"] == "A5")["status"] == "AVAILABLE"
     assert client.logout()[0]
     assert client.book_seat("show-1", "A5")[0] == "AUTH_FAILED"
     client.close()
+
+
+def test_houseful_show(services) -> None:
+    address, _ = services
+    client = TicketClient(address)
+    client.login("user_12", "pass_12")
+    n = 1
+    while n <= 10:
+        assert client.book_seat("show-2", "A" + str(n))[0] == "OK"
+        n = n + 1
+    seats = client.get_seats("show-2")[1]
+    for s in seats:
+        assert s["status"] == "BOOKED"
+    assert client.book_seat("show-2", "A1")[0] == "ALREADY_BOOKED"
+    client.close()
+
+
+def test_connection_overload(services) -> None:
+    address, _ = services
+    crowd = []
+    i = 0
+    while i < 40:
+        crowd.append(TicketClient(address))
+        i = i + 1
+
+    def ping(idx):
+        cl = crowd[idx]
+        n = str(idx % 20)
+        cl.login("user_" + n, "pass_" + n)
+        return cl.get_shows()[0]
+
+    with ThreadPoolExecutor(max_workers=40) as pool:
+        got = list(pool.map(ping, range(40)))
+    assert got.count("OK") == 40
+    for cl in crowd:
+        cl.close()
+
+
+def test_max_worker_saturation() -> None:
+    auth = UserLoginManager({f"user_{i}": f"pass_{i}" for i in range(16)})
+    app = BookingAppMain(auth, BookingStateMachine(num_seats_per_show=10))
+    srv = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
+    svc = ClientServer(app)
+    pb_grpc.add_ClientServiceServicer_to_server(svc, srv)
+    port = srv.add_insecure_port("127.0.0.1:0")
+    srv.start()
+    addr = f"127.0.0.1:{port}"
+    crowd = []
+    i = 0
+    while i < 16:
+        crowd.append(TicketClient(addr))
+        i = i + 1
+
+    def ping(idx):
+        cl = crowd[idx]
+        cl.login("user_" + str(idx), "pass_" + str(idx))
+        return cl.get_seats("show-1")[0]
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        got = list(pool.map(ping, range(16)))
+    assert got.count("OK") == 16
+    for cl in crowd:
+        cl.close()
+    svc.close()
+    srv.stop(grace=None)

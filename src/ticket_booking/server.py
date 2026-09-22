@@ -1,108 +1,163 @@
-
 import argparse
 import json
 import logging
 import sys
 from concurrent import futures
 from pathlib import Path
+
 import grpc
 
-GEN = Path(__file__).resolve().parent / "generated"
-if str(GEN) not in sys.path:
-    sys.path.insert(0, str(GEN))
+GEN_DIR_PATH = Path(__file__).resolve().parent / "generated"
+if str(GEN_DIR_PATH) not in sys.path:
+    sys.path.insert(0, str(GEN_DIR_PATH))
 
 import ticket_booking_pb2 as pb
 import ticket_booking_pb2_grpc as pb_grpc
-from ticket_booking.application import TicketApplication
+from ticket_booking.application import BookingAppMain
 from ticket_booking.payment import PaymentGateway
 
-log = logging.getLogger("ticket_booking")
-
-
-def _data(raw: bytes) -> tuple[dict[str, object] | None, str]:
-    if not raw:
-        return {}, ""
-    try:
-        data = json.loads(raw.decode())
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None, "Request payload is not valid JSON."
-    if not isinstance(data, dict):
-        return None, "Request payload must be a JSON object."
-    return data, ""
+logger_thing = logging.getLogger("ticket_booking")
 
 
 class ClientServer(pb_grpc.ClientServiceServicer):
-    def __init__(self, app: TicketApplication | None = None, payment_gateway: PaymentGateway | None = None, is_leader: bool = True, leader_address: str = "", llm_address: str = ""):
-        self.app = app or TicketApplication(payment=payment_gateway)
-        if payment_gateway:
-            self.app.payment = payment_gateway
-        self.is_leader = is_leader
-        self.leader_address = leader_address
-        self._llm_channel = grpc.insecure_channel(llm_address) if llm_address else None
-        self._llm_stub = pb_grpc.LLMServiceStub(self._llm_channel) if self._llm_channel else None
+    def __init__(self, app_obj=None, pay_gateway=None, am_i_leader=True, leader_addr="", llm_addr=""):
+        if app_obj:
+            self.app_obj = app_obj
+        else:
+            self.app_obj = BookingAppMain(pay_gateway=pay_gateway)
 
-    def close(self) -> None:
-        if self._llm_channel:
-            self._llm_channel.close()
+        if pay_gateway:
+            self.app_obj.pay_gateway = pay_gateway
 
-    def Login(self, req: pb.LoginRequest, ctx: grpc.ServicerContext) -> pb.LoginResponse:
-        out = self.app.login(req.username, req.password)
-        return pb.LoginResponse(status=out.status, token=out.token, message=out.message)
+        self.am_i_leader = am_i_leader
+        self.leader_addr = leader_addr
 
-    def Logout(self, req: pb.LogoutRequest, ctx: grpc.ServicerContext) -> pb.StatusResponse:
-        out = self.app.logout(req.token)
+        if llm_addr:
+            self.llm_channel = grpc.insecure_channel(llm_addr)
+            self.llm_stub = pb_grpc.LLMServiceStub(self.llm_channel)
+        else:
+            self.llm_channel = None
+            self.llm_stub = None
+
+    def close(self):
+        if self.llm_channel:
+            self.llm_channel.close()
+
+    def Login(self, req, ctx):
+        out = self.app_obj.login(req.username, req.password)
+        return pb.LoginResponse(status=out.status_code, token=out.session_token, message=out.info_msg)
+
+    def Signup(self, req, ctx):
+        out = self.app_obj.signup(req.username, req.password)
+        return pb.LoginResponse(status=out.status_code, token=out.session_token, message=out.info_msg)
+
+    def Logout(self, req, ctx):
+        out = self.app_obj.logout(req.token)
         return pb.StatusResponse(status=out.status, message=out.message)
 
-    def Get(self, req: pb.GetRequest, ctx: grpc.ServicerContext) -> pb.GetResponse:
-        data, error = _data(req.params)
-        if error:
-            return pb.GetResponse(status="INVALID_REQUEST", message=error)
-        params = {str(key): str(value) for key, value in data.items()}
-        status, items, msg = self.app.get(req.token, req.type, params)
-        if status != "OK":
-            return pb.GetResponse(status=status, message=msg)
+    def Get(self, req, ctx):
+        raw_bytes = req.params
+        if not raw_bytes:
+            parsed_data = {}
+            parse_err = ""
+        else:
+            try:
+                parsed_data = json.loads(raw_bytes.decode())
+                if not isinstance(parsed_data, dict):
+                    parsed_data = None
+                    parse_err = "Request payload must be a JSON object."
+                else:
+                    parse_err = ""
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                parsed_data = None
+                parse_err = "Request payload is not valid JSON."
+
+        if parse_err:
+            return pb.GetResponse(status="INVALID_REQUEST", message=parse_err)
+
+        clean_params = {}
+        for k in parsed_data:
+            clean_params[str(k)] = str(parsed_data[k])
+
+        status_val, item_list, msg_val = self.app_obj.get(req.token, req.type, clean_params)
+        if status_val != "OK":
+            return pb.GetResponse(status=status_val, message=msg_val)
+
         if req.type == "FAQ":
-            query = params.get("query", "").strip()
-            if not query:
+            q = clean_params.get("query", "").strip()
+            if not q:
                 return pb.GetResponse(status="INVALID_REQUEST", message="FAQ requests require a query parameter.")
-            if self._llm_stub is None:
+            if self.llm_stub is None:
                 return pb.GetResponse(status="LLM_UNAVAILABLE", message="The FAQ service is not configured.")
             try:
-                answer = self._llm_stub.GetLLMAnswer(pb.LLMRequest(request_id=req.token, query=query, context=self.app.faq_context(query, params)), timeout=10).answer
+                ctx_str = self.app_obj.faq_context(q, clean_params)
+                llm_resp = self.llm_stub.GetLLMAnswer(pb.LLMRequest(request_id=req.token, query=q, context=ctx_str), timeout=10)
+                answer_text = llm_resp.answer
             except grpc.RpcError as err:
-                log.warning("LLM RPC failed: %s", err)
+                logger_thing.warning("LLM RPC failed: %s", err)
                 return pb.GetResponse(status="LLM_UNAVAILABLE", message="The FAQ service could not be reached.")
-            return pb.GetResponse(status="OK", message=answer)
-        proto_items = [pb.Item(id=item.get("show_id") or item.get("seat_id") or "", data=json.dumps(item).encode()) for item in items]
-        return pb.GetResponse(status=status, items=proto_items, message=msg)
+            return pb.GetResponse(status="OK", message=answer_text)
 
-    def Post(self, req: pb.PostRequest, ctx: grpc.ServicerContext) -> pb.StatusResponse:
-        if not self.is_leader:
-            return pb.StatusResponse(status="NOT_LEADER", message="Redirect to current cluster leader.", redirect_to=self.leader_address)
-        data, error = _data(req.data)
-        if error:
-            return pb.StatusResponse(status="INVALID_REQUEST", message=error)
-        out = self.app.post(req.token, req.type, {str(key): "" if value is None else str(value) for key, value in data.items()}, req.request_id)
+        proto_item_list = []
+        for it in item_list:
+            item_key = it.get("show_id") or it.get("seat_id") or ""
+            proto_item_list.append(pb.Item(id=item_key, data=json.dumps(it).encode()))
+
+        return pb.GetResponse(status=status_val, items=proto_item_list, message=msg_val)
+
+    def Post(self, req, ctx):
+        if not self.am_i_leader:
+            return pb.StatusResponse(status="NOT_LEADER", message="Redirect to current cluster leader.", redirect_to=self.leader_addr)
+
+        raw_bytes = req.data
+        if not raw_bytes:
+            parsed_data = {}
+            parse_err = ""
+        else:
+            try:
+                parsed_data = json.loads(raw_bytes.decode())
+                if not isinstance(parsed_data, dict):
+                    parsed_data = None
+                    parse_err = "Request payload must be a JSON object."
+                else:
+                    parse_err = ""
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                parsed_data = None
+                parse_err = "Request payload is not valid JSON."
+
+        if parse_err:
+            return pb.StatusResponse(status="INVALID_REQUEST", message=parse_err)
+
+        clean_data = {}
+        for k in parsed_data:
+            v = parsed_data[k]
+            if v is None:
+                clean_data[str(k)] = ""
+            else:
+                clean_data[str(k)] = str(v)
+
+        out = self.app_obj.post(req.token, req.type, clean_data, req.request_id)
         return pb.StatusResponse(status=out.status, message=out.message, booking_id=out.booking_id)
 
 
-def serve(app: TicketApplication | None = None, payment_gateway: PaymentGateway | None = None, port: int = 50051, is_leader: bool = True, leader_address: str = "", llm_address: str = "", max_workers: int = 10, bind_address: str = "[::]") -> tuple[grpc.Server, int]:
+def serve(app_obj=None, pay_gateway=None, port=50051, am_i_leader=True, leader_addr="", llm_addr="", max_workers=64, bind_addr="[::]"):
     srv = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
-    pb_grpc.add_ClientServiceServicer_to_server(ClientServer(app, payment_gateway, is_leader, leader_address, llm_address), srv)
-    bound = srv.add_insecure_port(f"{bind_address}:{port}")
+    pb_grpc.add_ClientServiceServicer_to_server(ClientServer(app_obj, pay_gateway, am_i_leader, leader_addr, llm_addr), srv)
+    bound_port = srv.add_insecure_port(f"{bind_addr}:{port}")
     srv.start()
-    return srv, bound
+    return srv, bound_port
 
 
-def main() -> None:
+def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=50051)
     parser.add_argument("--llm-server", default="127.0.0.1:50055")
     parser.add_argument("--follower", action="store_true")
     parser.add_argument("--leader", default="")
     args = parser.parse_args()
-    srv, bound = serve(port=args.port, is_leader=not args.follower, leader_address=args.leader, llm_address=args.llm_server)
-    print(f"ClientService listening on port {bound} (leader={not args.follower})")
+
+    srv, bound_port = serve(port=args.port, am_i_leader=not args.follower, leader_addr=args.leader, llm_addr=args.llm_server)
+    print(f"ClientService listening on port {bound_port} (leader={not args.follower})")
     srv.wait_for_termination()
 
 

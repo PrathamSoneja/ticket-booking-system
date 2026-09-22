@@ -20,6 +20,7 @@ def test_protobuf_imports() -> None:
     assert hasattr(ticket_booking_pb2, "StatusResponse")
     assert hasattr(ticket_booking_pb2, "LLMRequest")
     assert hasattr(ticket_booking_pb2, "LLMResponse")
+    assert hasattr(ticket_booking_pb2_grpc.ClientServiceServicer, "Signup")
     assert hasattr(ticket_booking_pb2_grpc, "ClientServiceServicer")
     assert hasattr(ticket_booking_pb2_grpc, "RaftServiceServicer")
     assert hasattr(ticket_booking_pb2_grpc, "LLMServiceServicer")
