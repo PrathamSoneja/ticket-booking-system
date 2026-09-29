@@ -1,0 +1,19 @@
+src/.venv/
+src/.pytest_cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+src/ticket_booking/catalog.db
+src/ticket_booking/catalog.db-wal
+src/ticket_booking/catalog.db-shm
+temp.py
+*.pdf
+AOS 2026_27 Assignment.pdf
+COORDINATION.md
+instructions.md
+logs.md
+SRS_Distributed_Ticket_Booking_System.md
+tasks.md
+temp.py
+src\README.md
