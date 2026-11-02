@@ -71,6 +71,21 @@ class Client:
         items = [json.loads(it.data.decode()) for it in res.items]
         return res.status, items, res.message
 
+    def get_cluster_status(self):
+        if not self.token:
+            return "AUTH_FAILED", {}, "Please log in first."
+        res = self.stub.Get(pb.GetRequest(token=self.token, type="CLUSTER_STATUS"))
+        if res.status != "OK":
+            return res.status, {}, res.message
+        return res.status, json.loads(res.message), ""
+
+    def get_booking_analytics(self):
+        if not self.token:
+            return "AUTH_FAILED", [], "Please log in first."
+        res = self.stub.Get(pb.GetRequest(token=self.token, type="BOOKING_ANALYTICS"))
+        items = [json.loads(it.data.decode()) for it in res.items]
+        return res.status, items, res.message
+
     def book_seat(self, show_id, seat_id, card="4242424242424242", amount=50.0, req_id=None, hops=3):
         if not self.token:
             return "AUTH_FAILED", "", "Please log in first."
@@ -138,7 +153,11 @@ def main():
     parser.add_argument("--server", default="127.0.0.1:50051")
     parser.add_argument("--username", default="alice")
     parser.add_argument("--password", default="wonderland")
-    parser.add_argument("--action", choices=["signup", "shows", "seats", "book", "cancel", "faq"], default="shows")
+    parser.add_argument(
+        "--action",
+        choices=["signup", "shows", "seats", "book", "cancel", "faq", "status", "analytics"],
+        default="shows",
+    )
     parser.add_argument("--show-id", default="show-1")
     parser.add_argument("--seat-id", default="A1")
     parser.add_argument("--booking-id", default="")
@@ -163,6 +182,10 @@ def main():
         print(c.book_seat(args.show_id, args.seat_id))
     elif args.action == "cancel":
         print(c.cancel_seat(args.booking_id))
+    elif args.action == "status":
+        print(c.get_cluster_status())
+    elif args.action == "analytics":
+        print(c.get_booking_analytics())
     else:
         print(c.ask_faq(args.query, show_id=args.show_id))
     c.close()

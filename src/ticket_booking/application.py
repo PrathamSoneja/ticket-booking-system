@@ -1,3 +1,6 @@
+import json
+from uuid import NAMESPACE_URL, uuid5
+
 from .auth import Auth
 from .payment import Payments
 from .state_machine import SeatMap, Outcome
@@ -44,6 +47,8 @@ class BookingApp:
                 return "NOT_FOUND", [], "Show does not exist."
             else:
                 return "OK", lst, ""
+        if kind == "BOOKING_ANALYTICS":
+            return "OK", self.seats.analytics(), ""
         if kind == "FAQ":
             return "OK", [], ""
         return "INVALID_REQUEST", [], "Unsupported get request type."
@@ -113,3 +118,83 @@ class BookingApp:
                 self.pay.refund(out.txn)
             return out
         return Outcome("INVALID_REQUEST", "Unsupported post request type.")
+
+    def raft_post(self, tok, kind, data, req_id, raft):
+        user = self.auth.token_user(tok)
+        if user is None:
+            return Outcome("AUTH_FAILED", "A valid session token is required.")
+        if not req_id:
+            return Outcome("INVALID_REQUEST", "A request_id is required for Raft writes.")
+        already = self.seats.result(req_id)
+        if already:
+            return already
+        if kind == "BOOK_SEAT":
+            amt_str = data.get("amount", "")
+            money = None
+            if amt_str != "":
+                try:
+                    money = float(amt_str)
+                except (TypeError, ValueError):
+                    return Outcome("INVALID_AMOUNT", "Payment amount is not a valid number.")
+            picked = []
+            for part in str(data.get("seat_id", "")).replace(";", ",").split(","):
+                bit = part.strip()
+                if bit != "" and bit not in picked:
+                    picked.append(bit)
+            if money is None and picked:
+                money = self.pay.price * len(picked)
+            check = self.pay.check(money, data.get("card_number", "4242424242424242"))
+            txn = f"tx_{uuid5(NAMESPACE_URL, 'ticket-booking/' + req_id).hex[:12]}"
+            body = {
+                "user_id": user,
+                "show_id": data.get("show_id", ""),
+                "seat_id": ",".join(picked),
+                "amount": money,
+                "txn": txn,
+                "pay_status": check.status,
+                "pay_message": check.message,
+            }
+        elif kind == "CANCEL_SEAT":
+            body = {"user_id": user, "booking_id": data.get("booking_id", "")}
+        else:
+            return Outcome("INVALID_REQUEST", "Unsupported post request type.")
+        status, out = raft.propose(kind, json.dumps(body, separators=(",", ":")).encode(), req_id)
+        if status != "OK":
+            return Outcome(status, "The request could not be committed by a Raft majority.")
+        return out
+
+    def apply_raft(self, kind, payload, req_id):
+        body = json.loads(payload.decode())
+        if kind == "AUTH_SESSION":
+            self.auth.add_session_hash(body["token_hash"], body["user_id"], body["expiry"])
+            return Outcome("OK", "Session replicated.")
+        if kind == "AUTH_SIGNUP":
+            digest = bytes.fromhex(body["password_hash"])
+            if not self.auth.add_user_hash(body["user_id"], digest):
+                return Outcome("USERNAME_TAKEN", "That username is already registered.")
+            self.auth.add_session_hash(body["token_hash"], body["user_id"], body["expiry"])
+            return Outcome("OK", "Account registered.")
+        if kind == "AUTH_LOGOUT":
+            self.auth.revoke_hash(body["token_hash"])
+            return Outcome("OK", "Session revoked.")
+        if kind == "BOOK_SEAT":
+            def pay():
+                if body["pay_status"] != "SUCCESS":
+                    return body["pay_status"], body["pay_message"], ""
+                self.pay.apply_charge(body["user_id"], body["amount"], body["txn"], req_id)
+                return "SUCCESS", "Payment processed successfully.", body["txn"]
+
+            out = self.seats.book(
+                body["user_id"],
+                body["show_id"],
+                body["seat_id"],
+                req_id,
+                pay=pay,
+            )
+            return out
+        if kind == "CANCEL_SEAT":
+            out = self.seats.cancel(body["user_id"], body["booking_id"], req_id)
+            if out.status == "OK" and out.txn:
+                self.pay.refund(out.txn)
+            return out
+        return Outcome("INVALID_REQUEST", "Unsupported Raft command.")

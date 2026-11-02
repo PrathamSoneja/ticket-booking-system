@@ -113,3 +113,25 @@ def test_overlap_seats() -> None:
             taken = taken + 1
     assert taken == 2
     assert seats["A2"] == "BOOKED"
+
+
+def test_booking_analytics() -> None:
+    app = BookingApp()
+    token = app.login("alice", "wonderland").token
+    first = app.post(
+        token,
+        "BOOK_SEAT",
+        {"show_id": "show-1", "seat_id": "A1"},
+        str(uuid4()),
+    )
+    app.post(
+        token,
+        "BOOK_SEAT",
+        {"show_id": "show-1", "seat_id": "A2"},
+        str(uuid4()),
+    )
+    app.post(token, "CANCEL_SEAT", {"booking_id": first.booking_id}, str(uuid4()))
+    rows = {row["show_id"]: row for row in app.get(token, "BOOKING_ANALYTICS")[1]}
+    assert rows["show-1"]["booking_count"] == 2
+    assert rows["show-1"]["cancelled_count"] == 1
+    assert rows["show-1"]["cancellation_rate"] == 0.5

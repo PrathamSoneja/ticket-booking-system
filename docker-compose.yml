@@ -1,0 +1,86 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-data:/root/.ollama
+
+  llm:
+    build:
+      context: ./src
+    command: ["python", "-m", "ticket_booking.llm_service"]
+    environment:
+      OLLAMA_URL: http://ollama:11434/api/generate
+      OLLAMA_MODEL: llama3.2:1b
+    ports:
+      - "50055:50055"
+    depends_on:
+      - ollama
+
+  app-1:
+    build:
+      context: ./src
+    command:
+      - python
+      - -m
+      - ticket_booking.server
+      - --node-id
+      - node-1
+      - --peers
+      - node-1=app-1:50051,node-2=app-2:50051,node-3=app-3:50051
+      - --data-dir
+      - /app/data/node-1
+      - --llm-server
+      - llm:50055
+    ports:
+      - "50051:50051"
+    volumes:
+      - ./.data/node-1:/app/data/node-1
+    depends_on:
+      - llm
+
+  app-2:
+    build:
+      context: ./src
+    command:
+      - python
+      - -m
+      - ticket_booking.server
+      - --node-id
+      - node-2
+      - --peers
+      - node-1=app-1:50051,node-2=app-2:50051,node-3=app-3:50051
+      - --data-dir
+      - /app/data/node-2
+      - --llm-server
+      - llm:50055
+    ports:
+      - "50052:50051"
+    volumes:
+      - ./.data/node-2:/app/data/node-2
+    depends_on:
+      - llm
+
+  app-3:
+    build:
+      context: ./src
+    command:
+      - python
+      - -m
+      - ticket_booking.server
+      - --node-id
+      - node-3
+      - --peers
+      - node-1=app-1:50051,node-2=app-2:50051,node-3=app-3:50051
+      - --data-dir
+      - /app/data/node-3
+      - --llm-server
+      - llm:50055
+    ports:
+      - "50053:50051"
+    volumes:
+      - ./.data/node-3:/app/data/node-3
+    depends_on:
+      - llm
+
+volumes:
+  ollama-data:

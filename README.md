@@ -2,6 +2,8 @@
 
 This system is intended to serve as a dependable platform for booking tickets concurrently. It demonstrates how clients and servers communicate through gRPC, how in-memory state is managed in a thread safe manner using a mutex, and how shows and FAQs are stored persistently in SQLite. Payment handling is carried out with deterministic mock logic, the cluster leader is redirected in a transparent way, and questions posed in natural language are answered by a locally hosted language model.
 
+The M2 app-server mode uses Raft for leader election, replicated logs, majority commits, and follower recovery. Each app node keeps its Raft term, vote, and log in a separate SQLite database; the catalog database remains unchanged.
+
 ## 1. Main Features and Technologies
 
 Main features:
@@ -11,6 +13,7 @@ Main features:
 - Multi-seat reservations up to 5 seats per request
 - Concurrent booking protection using ordered per-seat locks
 - Idempotent request handling
+- Raft-backed three-node booking replication and leader failover
 - Mock payment and refund handling
 - Context-aware support chat and an Ollama LLM service
 - Client redirection from follower nodes to the leader node
@@ -33,7 +36,7 @@ Technologies:
 System architecture:
 
 - Client: Through gRPC stubs, a Python command-line interface talks to the server. The session token is kept after login, and when write requests land on follower nodes, the client follows the leader redirection on its own.
-- Server: Client requests are handled by an application server that runs ClientService, which relies on a thread pool. It checks that session tokens are valid and that requests are idempotent, carries out seat allocations, and works with the mock payment gateway as well as the LLM service.
+- Server: Client requests are handled by a gRPC application server. In M2 mode, Raft elects a leader, replicates commands, and applies them after a majority commit. Followers serve local committed reads and redirect writes; signup, login sessions, and logout are kept usable across nodes.
 - Database: Static show schedules and support FAQ topics sit in an embedded SQLite database (catalog. db). If the tables are empty when the process starts, seed data is loaded into SQLite.
 - LLM Service: A separate gRPC service (LLMService) finds matching FAQ documents through keyword overlap and NLTK stopwords, takes live seat availability from the application server, and calls Ollama at [http://127.0.0.1:11434/api/generate](http://127.0.0.1:11434/api/generate).
 
@@ -113,12 +116,39 @@ This starts the leader application server on port 50051.
 python -m ticket_booking.server --follower --leader 127.0.0.1:50051 --port 50052
 ```
 
+This legacy single-server/follower setup remains for M1 compatibility. For M2, start each app process with the same peer list and its own persistent data directory. From `src`, start the FAQ server in a separate terminal if FAQ requests are needed:
+
+```powershell
+python -m ticket_booking.llm_service
+```
+
+Then start the three app processes from `src`:
+
+```powershell
+python -m ticket_booking.server --node-id node-1 --peers node-1=127.0.0.1:50051,node-2=127.0.0.1:50052,node-3=127.0.0.1:50053 --data-dir data\node-1
+```
+
+```powershell
+python -m ticket_booking.server --node-id node-2 --peers node-1=127.0.0.1:50051,node-2=127.0.0.1:50052,node-3=127.0.0.1:50053 --data-dir data\node-2
+```
+
+```powershell
+python -m ticket_booking.server --node-id node-3 --peers node-1=127.0.0.1:50051,node-2=127.0.0.1:50052,node-3=127.0.0.1:50053 --data-dir data\node-3
+```
+
+Wait for the election log, then send client requests to any app address. `--peers` includes every node, including the current node. Raft state is written to `<data-dir>/raft.db`; do not reuse a data directory for multiple nodes. A read sent to a follower uses that node's locally applied committed state and can briefly lag after a new commit.
+
+For Docker Compose, run `docker compose up -d --build`, then download the FAQ model with `docker compose exec ollama ollama pull llama3.2:1b`. The app nodes are published on ports 50051–50053. Use `docker compose stop app-1` (or `app-2` / `app-3`) to simulate a node failure and `docker compose start app-1` to rejoin it. Docker data is kept under `.data/`.
+
 Available server command-line options:
 
 - --port: Listening port for the application server (default: 50051)
 - --llm-server: Address of the LLM service (default: 127.0.0.1:50055)
 - --follower: Run in follower mode (redirects write requests to leader)
-- --leader: Address of cluster leader to provide in redirect responses
+- --leader: Address of cluster leader to provide in redirect responses (legacy mode)
+- --node-id: Raft identity for this app node
+- --peers: Comma-separated node-id=host:port list including this node
+- --data-dir: Persistent directory for this node's SQLite Raft database
 
 
 
@@ -160,6 +190,8 @@ Ask an FAQ support question:
 
 ```bash
 python -m ticket_booking.client --action faq --query "How do I cancel a booking?"
+python -m ticket_booking.client --server 127.0.0.1:50052 --action status
+python -m ticket_booking.client --action analytics
 ```
 
 Register a new user account:
@@ -173,7 +205,7 @@ Client command-line options:
 - --server: Target server address (default: 127.0.0.1:50051)
 - --username: Username for authentication (default: alice)
 - --password: Password for authentication (default: wonderland)
-- --action: Operation to execute (signup, shows, seats, book, cancel, faq; default: shows)
+- --action: Operation to execute (signup, shows, seats, book, cancel, faq, status, analytics; default: shows)
 - --show-id: Show identifier for seats, bookings, or FAQs (default: show-1)
 - --seat-id: Seat identifier or comma-separated list of up to 5 seats (default: A1)
 - --booking-id: Booking identifier used for cancellations
@@ -225,6 +257,7 @@ Running individual test suites:
 
 ```bash
 python -m pytest tests/test_proto.py
+python -m pytest tests/test_raft.py
 python -m pytest tests/test_auth.py
 python -m pytest tests/test_booking.py
 python -m pytest tests/test_payment.py
@@ -272,4 +305,3 @@ Mitali Narayan:
 - LLM Service and Database: Built gRPC LLM service, Ollama integration and SQLite database catalog schema with automated seeding for shows and FAQ entries.
 - Retrieval Engine and Payments: NLTK keyword scoring for domain FAQ retrieval, deterministic mock payment and refund handling.
 - Project Test and Collaboration: Synchronized test suite execution between components, checked API contract adherence to protobuf definitions, helped with documentation..
-

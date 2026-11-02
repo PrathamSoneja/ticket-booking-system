@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from threading import Lock
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,28 @@ class Payments:
         finally:
             self.lock.release()
 
+    def check(self, amount=None, card="4242424242424242"):
+        cost = self.price if amount is None else amount
+        clean = card.replace(" ", "").replace("-", "")
+        if cost <= 0:
+            return PayResult("INVALID_AMOUNT", amount=cost, message="Payment amount must be greater than zero.")
+        if clean.startswith("0000") or clean.endswith("0000"):
+            return PayResult("PAYMENT_FAILED", amount=cost, message="Card declined by mock payment issuer.")
+        return PayResult("SUCCESS", amount=cost, message="Payment can be processed.")
+
+    def apply_charge(self, user, amount, txn, req_id):
+        self.lock.acquire()
+        try:
+            already = self.charges.get(req_id)
+            if already:
+                return already
+            out = PayResult("SUCCESS", txn, amount, "Payment processed successfully.")
+            self.charges[req_id] = out
+            self.txns[txn] = out
+            return out
+        finally:
+            self.lock.release()
+
     def refund(self, txn):
         self.lock.acquire()
         try:
@@ -63,9 +85,10 @@ class Payments:
             original = self.txns.get(txn)
             if original is None:
                 return PayResult("NOT_FOUND", message=f"Transaction {txn} not found.")
+            ref = f"ref_{uuid5(NAMESPACE_URL, 'ticket-booking/refund/' + txn).hex[:12]}"
             out = PayResult(
                 "SUCCESS",
-                f"ref_{uuid4().hex[:12]}",
+                ref,
                 original.amount,
                 f"Refund of ${original.amount:.2f} processed for transaction {txn}.",
             )

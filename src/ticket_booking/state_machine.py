@@ -72,7 +72,32 @@ class SeatMap:
             out.append({"seat_id": s.seat_id, "status": s.status})
         return out
 
-    def book(self, user_id, show_id, seat_id, req_id, pay=None):
+    def analytics(self):
+        rows = {}
+        for show_id in self.catalog:
+            rows[show_id] = {
+                "show_id": show_id,
+                "booking_count": 0,
+                "cancelled_count": 0,
+                "cancellation_rate": 0.0,
+            }
+        self.lock.acquire()
+        try:
+            for booking in self.bookings.values():
+                row = rows.get(booking.show_id)
+                if row is None:
+                    continue
+                row["booking_count"] = row["booking_count"] + 1
+                if booking.status == "CANCELLED":
+                    row["cancelled_count"] = row["cancelled_count"] + 1
+            for row in rows.values():
+                if row["booking_count"] > 0:
+                    row["cancellation_rate"] = row["cancelled_count"] / row["booking_count"]
+            return list(rows.values())
+        finally:
+            self.lock.release()
+
+    def book(self, user_id, show_id, seat_id, req_id, pay=None, txn=""):
         self.lock.acquire()
         already = self.seen.get(req_id)
         self.lock.release()
@@ -134,7 +159,6 @@ class SeatMap:
                     self.seen[req_id] = out
                     self.lock.release()
                     return out
-            txn = ""
             if pay:
                 pay_status, pay_msg, txn = pay()
                 if pay_status != "SUCCESS":
@@ -232,3 +256,10 @@ class SeatMap:
             while i >= 0:
                 held[i].release()
                 i = i - 1
+
+    def result(self, req_id):
+        self.lock.acquire()
+        try:
+            return self.seen.get(req_id)
+        finally:
+            self.lock.release()

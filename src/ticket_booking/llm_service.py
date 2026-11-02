@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -18,10 +19,12 @@ import ticket_booking_pb2_grpc as pb_grpc
 
 
 class LLMService(pb_grpc.LLMServiceServicer):
-    def __init__(self, faq=None, ollama="http://127.0.0.1:11434/api/generate", model="llama3.2:1b", timeout=30.0):
+    def __init__(self, faq=None, ollama=None, model=None, timeout=30.0):
         self.faq = faq if faq else FaqIndex()
-        self.ollama = ollama
-        self.model = model
+        self.ollama = ollama or os.environ.get(
+            "OLLAMA_URL", "http://127.0.0.1:11434/api/generate"
+        )
+        self.model = model or os.environ.get("OLLAMA_MODEL", "llama3.2:1b")
         self.timeout = timeout
 
     def GetLLMAnswer(self, req, ctx):
