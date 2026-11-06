@@ -24,6 +24,7 @@ class RaftNode:
         election_min=0.45,
         election_max=0.8,
         heartbeat=0.1,
+        client_peers=None,
     ):
         if node_id in peers:
             raise ValueError("peers must not contain this node")
@@ -31,6 +32,9 @@ class RaftNode:
             raise ValueError("Raft timing values must be positive and ordered")
         self.node_id = node_id
         self.peers = dict(peers)
+        self.client_peers = dict(client_peers) if client_peers is not None else self.peers
+        if self.client_peers.keys() != self.peers.keys():
+            raise ValueError("client_peers must contain the same node IDs as peers")
         self.total = len(self.peers) + 1
         self.majority = self.total // 2 + 1
         self.store = RaftStorage(db_path)
@@ -73,6 +77,12 @@ class RaftNode:
 
     @property
     def leader_address(self):
+        if self.leader_id == self.node_id:
+            return None
+        return self.client_peers.get(self.leader_id)
+
+    @property
+    def leader_rpc_address(self):
         if self.leader_id == self.node_id:
             return None
         return self.peers.get(self.leader_id)

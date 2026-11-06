@@ -218,10 +218,10 @@ class AppServer(pb_grpc.ClientServiceServicer):
 
     def _forward_auth(self, method, req):
         response = pb.StatusResponse if method == "Logout" else pb.LoginResponse
-        leader = self.raft.leader_address or ""
+        leader = self.raft.leader_rpc_address or ""
         if not leader:
             self.raft.wait_for_leader(1.0)
-            leader = self.raft.leader_address or ""
+            leader = self.raft.leader_rpc_address or ""
         if not leader:
             return response(status="NO_LEADER", message="The cluster has not elected a leader.")
         ch = grpc.insecure_channel(leader)
@@ -290,6 +290,7 @@ def main():
     parser.add_argument("--leader", default="")
     parser.add_argument("--node-id", default="")
     parser.add_argument("--peers", default="")
+    parser.add_argument("--client-addresses", default="")
     parser.add_argument("--data-dir", default="")
     args = parser.parse_args()
     raft = None
@@ -302,6 +303,12 @@ def main():
             parser.error(str(err))
         if args.node_id not in addrs:
             parser.error("--peers must include this --node-id")
+        try:
+            client_addrs = parse_peers(args.client_addresses) if args.client_addresses else addrs
+        except ValueError as err:
+            parser.error(str(err))
+        if client_addrs.keys() != addrs.keys():
+            parser.error("--client-addresses must include exactly the node IDs in --peers")
         own = addrs[args.node_id]
         try:
             peer_port = int(own.rsplit(":", 1)[1])
@@ -317,6 +324,9 @@ def main():
             {node: addr for node, addr in addrs.items() if node != args.node_id},
             data_dir / "raft.db",
             app.apply_raft,
+            client_peers={
+                node: addr for node, addr in client_addrs.items() if node != args.node_id
+            },
         )
         srv, bound = serve(app=app, port=port, llm_url=args.llm_server, bind="[::]", raft=raft)
         print(f"Raft app node {args.node_id} listening on port {bound}")

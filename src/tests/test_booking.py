@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from uuid import uuid4
 from ticket_booking.application import BookingApp
 from ticket_booking.payment import Payments
@@ -66,6 +67,25 @@ def test_atomic_seats() -> None:
     seats = {s["seat_id"]: s["status"] for s in app.get(token, "SEATS", {"show_id": "show-1"})[1]}
     assert seats["A2"] == "AVAILABLE"
     assert seats["A3"] == "AVAILABLE"
+
+
+def test_seat_reads_wait_for_atomic_state_updates() -> None:
+    app = BookingApp()
+    started = Event()
+
+    def read_seats():
+        started.set()
+        return app.seats.seats("show-1")
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        app.seats.lock.acquire()
+        try:
+            read = pool.submit(read_seats)
+            assert started.wait(1)
+            assert not read.done()
+        finally:
+            app.seats.lock.release()
+        assert len(read.result()) == 50
 
 
 def test_parallel_shows() -> None:

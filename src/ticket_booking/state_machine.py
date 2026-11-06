@@ -64,13 +64,14 @@ class SeatMap:
         return out
 
     def seats(self, show_id):
-        here = self.grid.get(show_id)
-        if here is None:
-            return None
-        out = []
-        for s in here.values():
-            out.append({"seat_id": s.seat_id, "status": s.status})
-        return out
+        with self.lock:
+            here = self.grid.get(show_id)
+            if here is None:
+                return None
+            out = []
+            for s in here.values():
+                out.append({"seat_id": s.seat_id, "status": s.status})
+            return out
 
     def analytics(self):
         rows = {}
@@ -169,16 +170,15 @@ class SeatMap:
                     return out
             bid = str(uuid5(NAMESPACE_URL, f"ticket-booking/{req_id}"))
             joined = ",".join(picked)
-            for one in targets:
-                one.status = "BOOKED"
-                one.owner = user_id
-                one.booking = bid
-            self.lock.acquire()
-            self.bookings[bid] = Booking(bid, user_id, show_id, joined, txn=txn)
-            out = Outcome("OK", "Booking confirmed.", bid, txn)
-            self.seen[req_id] = out
-            self.lock.release()
-            return out
+            with self.lock:
+                for one in targets:
+                    one.status = "BOOKED"
+                    one.owner = user_id
+                    one.booking = bid
+                self.bookings[bid] = Booking(bid, user_id, show_id, joined, txn=txn)
+                out = Outcome("OK", "Booking confirmed.", bid, txn)
+                self.seen[req_id] = out
+                return out
         finally:
             i = len(held) - 1
             while i >= 0:
@@ -234,23 +234,20 @@ class SeatMap:
                 return already
             rec = self.bookings.get(booking_id)
             self.lock.release()
-            if rec.status == "CANCELLED":
-                out = Outcome("ALREADY_CANCELLED", "Booking is already cancelled.", booking_id, rec.txn)
-                self.lock.acquire()
+            with self.lock:
+                if rec.status == "CANCELLED":
+                    out = Outcome("ALREADY_CANCELLED", "Booking is already cancelled.", booking_id, rec.txn)
+                    self.seen[req_id] = out
+                    return out
+                for s in picked:
+                    one = self.grid[rec.show_id][s]
+                    one.status = "AVAILABLE"
+                    one.owner = None
+                    one.booking = None
+                rec.status = "CANCELLED"
+                out = Outcome("OK", "Booking cancelled.", booking_id, rec.txn)
                 self.seen[req_id] = out
-                self.lock.release()
                 return out
-            for s in picked:
-                one = self.grid[rec.show_id][s]
-                one.status = "AVAILABLE"
-                one.owner = None
-                one.booking = None
-            rec.status = "CANCELLED"
-            out = Outcome("OK", "Booking cancelled.", booking_id, rec.txn)
-            self.lock.acquire()
-            self.seen[req_id] = out
-            self.lock.release()
-            return out
         finally:
             i = len(held) - 1
             while i >= 0:

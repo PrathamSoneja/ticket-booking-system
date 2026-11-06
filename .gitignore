@@ -7,4 +7,5 @@ __pycache__/
 src/ticket_booking/catalog.db
 src/ticket_booking/catalog.db-wal
 src/ticket_booking/catalog.db-shm
+.data/
 temp.py

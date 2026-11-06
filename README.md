@@ -136,9 +136,9 @@ python -m ticket_booking.server --node-id node-2 --peers node-1=127.0.0.1:50051,
 python -m ticket_booking.server --node-id node-3 --peers node-1=127.0.0.1:50051,node-2=127.0.0.1:50052,node-3=127.0.0.1:50053 --data-dir data\node-3
 ```
 
-Wait for the election log, then send client requests to any app address. `--peers` includes every node, including the current node. Raft state is written to `<data-dir>/raft.db`; do not reuse a data directory for multiple nodes. A read sent to a follower uses that node's locally applied committed state and can briefly lag after a new commit.
+Wait for the election log, then send client requests to any app address. `--peers` includes every node, including the current node. `--client-addresses` is optional and defaults to `--peers`; set it when clients use different hostnames or published ports than the nodes use for Raft communication. Raft state is written to `<data-dir>/raft.db`; do not reuse a data directory for multiple nodes. A read sent to a follower uses that node's locally applied committed state and can briefly lag after a new commit.
 
-For Docker Compose, run `docker compose up -d --build`, then download the FAQ model with `docker compose exec ollama ollama pull llama3.2:1b`. The app nodes are published on ports 50051–50053. Use `docker compose stop app-1` (or `app-2` / `app-3`) to simulate a node failure and `docker compose start app-1` to rejoin it. Docker data is kept under `.data/`.
+For Docker Compose, run `docker compose up -d --build`, then download the FAQ model with `docker compose exec ollama ollama pull llama3.2:1b`. The app nodes are published on localhost ports 50051–50053, and advertised client addresses use those ports so redirects work from the host. For another-machine access, configure host bindings and `--client-addresses` for reachable addresses; do not expose these plaintext gRPC ports to an untrusted network. Use `docker compose stop app-1` (or `app-2` / `app-3`) to simulate a node failure and `docker compose start app-1` to rejoin it. Docker data is kept under `.data/`.
 
 Available server command-line options:
 
@@ -148,6 +148,7 @@ Available server command-line options:
 - --leader: Address of cluster leader to provide in redirect responses (legacy mode)
 - --node-id: Raft identity for this app node
 - --peers: Comma-separated node-id=host:port list including this node
+- --client-addresses: Optional client-reachable node-id=host:port list for follower redirects
 - --data-dir: Persistent directory for this node's SQLite Raft database
 
 

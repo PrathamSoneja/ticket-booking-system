@@ -2,9 +2,9 @@
 
 Course project (CS G623): users log in, browse shows, book or cancel seats, and ask booking FAQs. Services talk over gRPC.
 
-**Now (Milestone 1):** one app server, a separate FAQ/LLM server, a CLI client, mock payments, and session auth. Two people cannot book the same seat on that node.
+**Milestone 2:** app servers use Raft for leader election, majority-committed log replication, and recovery after node restarts. Single-server mode remains available for Milestone 1 compatibility.
 
-**Later (Milestone 2):** three app servers keep the same seat map using Raft. That is not implemented yet. The Raft RPCs exist in the proto file only.
+For the three-node setup, persistence details, and Docker Compose instructions, see the [project README](../README.md).
 
 Demo users: `alice` / `wonderland`, `bob` / `builder`.
 

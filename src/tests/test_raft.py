@@ -194,6 +194,20 @@ def test_raft_storage_replays_committed_entries(tmp_path):
     restarted.close()
 
 
+def test_leader_advertises_client_address_separate_from_peer_address(tmp_path):
+    node = RaftNode(
+        "n1",
+        {"n2": "raft-internal:50051"},
+        tmp_path / "raft.db",
+        lambda cmd, data, rid: Outcome("OK", ""),
+        client_peers={"n2": "127.0.0.1:50052"},
+    )
+    node.leader_id = "n2"
+    assert node.leader_rpc_address == "raft-internal:50051"
+    assert node.leader_address == "127.0.0.1:50052"
+    node.close()
+
+
 def test_cluster_election_replication_failure_and_catchup(cluster):
     leader = wait_leader(cluster)
     assert leader is not None

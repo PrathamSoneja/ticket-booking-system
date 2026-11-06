@@ -53,3 +53,9 @@ Added Signup RPC: unique usernames (case-insensitive), password min 8 with lette
 
 ## 2026-09-22 — TASK-CATALOG-2
 Moved show/FAQ seed rows into `seed.py`; that module writes them into SQLite. `faq_data.py` only searches.
+
+## 2026-11-02 — Raft review and state visibility (Codex)
+Reviewed the Raft implementation against the SRS and project README. Raft election, persistence, quorum replication, follower recovery, cluster inspection, and fault-injection coverage passed the project test suite (41 tests). Synchronized seat-map reads and multi-seat booking/cancellation updates so readers cannot observe partial transitions; updated the stale `src/README.md` and marked verified M2 tasks complete.
+
+## 2026-11-02 — TASK-FINAL-1 (Docker verification, Codex)
+Built and exercised the Compose cluster against real Ollama inference. Fixed host-client leader redirects, installed NLTK stopwords in the image, combined live-seat and FAQ context, tightened answer grounding, and removed the LLM host port; verified auth, booking/cancellation, concurrency, 3.85-second failover, rejoin catch-up, FAQs, and 42 tests. User confirmed deterministic mock payment is the only intentional mock. App ports are bound to localhost and LLM is internal-only; host login, show listing, and a cancellation FAQ were rechecked after the binding change. Plaintext gRPC, demo credentials, fixed-salt password hashing, missing login throttling, client-supplied booking amounts, and unenforced cancellation cutoff remain production-readiness gaps.
