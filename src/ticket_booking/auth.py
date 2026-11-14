@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import pbkdf2_hmac, sha256
@@ -22,6 +23,25 @@ class Session:
 class Auth:
     SALT = b"ticket-booking-demo-v1"
 
+    @staticmethod
+    def _new_salt():
+        return os.urandom(16)
+
+    @staticmethod
+    def _hash_password(password, salt):
+        return pbkdf2_hmac("sha256", password.encode(), salt, 200_000)
+
+    @staticmethod
+    def _stored_hash(stored):
+        if not isinstance(stored, (bytes, bytearray)):
+            return None, None
+        value = bytes(stored)
+        if len(value) == 32:
+            return Auth.SALT, value
+        if len(value) >= 48:
+            return value[:16], value[16:]
+        return None, None
+
     def __init__(self, users=None, lifetime=timedelta(hours=1)):
         if users == None:
             users = {"alice": "wonderland", "bob": "builder"}
@@ -31,7 +51,8 @@ class Auth:
                 n = n + 1
         self.hashes = {}
         for uname in users:
-            self.hashes[uname] = pbkdf2_hmac("sha256", users[uname].encode(), self.SALT, 200_000)
+            salt = self._new_salt()
+            self.hashes[uname] = salt + self._hash_password(users[uname], salt)
         self.sessions = {}
         self.lifetime = lifetime
         self.lock = Lock()
@@ -43,10 +64,13 @@ class Auth:
 
     def check_credentials(self, uname, pw):
         stored = self.hashes.get(uname)
-        check = pbkdf2_hmac("sha256", pw.encode(), self.SALT, 200_000)
         if stored is None:
             return False
-        return compare_digest(stored, check)
+        salt, expected = self._stored_hash(stored)
+        if salt is None or expected is None:
+            return False
+        check = self._hash_password(pw, salt)
+        return compare_digest(expected, check)
 
     def new_session(self, uname, now=None):
         if now == None:
@@ -109,7 +133,8 @@ class Auth:
         self.lock.release()
         if taken:
             return "USERNAME_TAKEN", "", b"", "That username is already registered."
-        digest = pbkdf2_hmac("sha256", pw.encode(), self.SALT, 200_000)
+        salt = self._new_salt()
+        digest = salt + self._hash_password(pw, salt)
         return "OK", name, digest, ""
 
     def add_user_hash(self, uname, digest):
@@ -117,6 +142,11 @@ class Auth:
         try:
             for name in self.hashes:
                 if name.lower() == uname.lower():
+                    if isinstance(self.hashes[name], (bytes, bytearray)):
+                        stored = bytes(self.hashes[name])
+                        salt, expected = self._stored_hash(stored)
+                        if salt is not None and expected is not None:
+                            return compare_digest(expected, digest[16:]) if len(digest) >= 48 else compare_digest(expected, digest)
                     return compare_digest(self.hashes[name], digest)
             self.hashes[uname] = digest
             return True

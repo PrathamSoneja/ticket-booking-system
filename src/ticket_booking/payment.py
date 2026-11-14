@@ -1,4 +1,6 @@
+import math
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from threading import Lock
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
@@ -19,6 +21,30 @@ class Payments:
         self.refunds = {}
         self.txns = {}
 
+    @staticmethod
+    def _as_decimal(value):
+        if value is None:
+            return None
+        if isinstance(value, Decimal):
+            amount = value
+        else:
+            text = str(value).strip()
+            if text == "":
+                return None
+            try:
+                amount = Decimal(text)
+            except (InvalidOperation, TypeError, ValueError):
+                return None
+        if not amount.is_finite():
+            return None
+        return amount
+
+    def _normalise(self, value):
+        cost = self.price if value is None else self._as_decimal(value)
+        if cost is None:
+            return None
+        return float(cost)
+
     def charge_count(self):
         self.lock.acquire()
         cnt = 0
@@ -33,19 +59,19 @@ class Payments:
         try:
             if req_id and req_id in self.charges:
                 return self.charges[req_id]
-            if amount is None:
-                cost = self.price
+            cost = self._normalise(amount)
+            if cost is None or not math.isfinite(cost) or cost <= 0:
+                out = PayResult("INVALID_AMOUNT", amount=0.0, message="Payment amount must be a finite number greater than zero.")
+            elif cost < self.price:
+                out = PayResult("INVALID_AMOUNT", amount=cost, message="Payment amount is below the required booking price.")
             else:
-                cost = amount
-            clean = card.replace(" ", "").replace("-", "")
-            if cost <= 0:
-                out = PayResult("INVALID_AMOUNT", amount=cost, message="Payment amount must be greater than zero.")
-            elif clean.startswith("0000") or clean.endswith("0000"):
-                out = PayResult("PAYMENT_FAILED", amount=cost, message="Card declined by mock payment issuer.")
-            else:
-                txn = f"tx_{uuid4().hex[:12]}"
-                out = PayResult("SUCCESS", txn, cost, "Payment processed successfully.")
-                self.txns[txn] = out
+                clean = card.replace(" ", "").replace("-", "")
+                if clean.startswith("0000") or clean.endswith("0000"):
+                    out = PayResult("PAYMENT_FAILED", amount=cost, message="Card declined by mock payment issuer.")
+                else:
+                    txn = f"tx_{uuid4().hex[:12]}"
+                    out = PayResult("SUCCESS", txn, cost, "Payment processed successfully.")
+                    self.txns[txn] = out
             if req_id:
                 self.charges[req_id] = out
             return out
@@ -53,10 +79,12 @@ class Payments:
             self.lock.release()
 
     def check(self, amount=None, card="4242424242424242"):
-        cost = self.price if amount is None else amount
+        cost = self._normalise(amount)
         clean = card.replace(" ", "").replace("-", "")
-        if cost <= 0:
-            return PayResult("INVALID_AMOUNT", amount=cost, message="Payment amount must be greater than zero.")
+        if cost is None or not math.isfinite(cost) or cost <= 0:
+            return PayResult("INVALID_AMOUNT", amount=0.0, message="Payment amount must be a finite number greater than zero.")
+        if cost < self.price:
+            return PayResult("INVALID_AMOUNT", amount=cost, message="Payment amount is below the required booking price.")
         if clean.startswith("0000") or clean.endswith("0000"):
             return PayResult("PAYMENT_FAILED", amount=cost, message="Card declined by mock payment issuer.")
         return PayResult("SUCCESS", amount=cost, message="Payment can be processed.")
@@ -67,7 +95,10 @@ class Payments:
             already = self.charges.get(req_id)
             if already:
                 return already
-            out = PayResult("SUCCESS", txn, amount, "Payment processed successfully.")
+            cost = self._normalise(amount)
+            if cost is None or not math.isfinite(cost) or cost <= 0 or cost < self.price:
+                return PayResult("INVALID_AMOUNT", amount=0.0, message="Payment amount is not valid for this booking.")
+            out = PayResult("SUCCESS", txn, cost, "Payment processed successfully.")
             self.charges[req_id] = out
             self.txns[txn] = out
             return out

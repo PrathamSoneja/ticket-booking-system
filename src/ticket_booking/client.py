@@ -1,7 +1,9 @@
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import uuid4
 
 import grpc
@@ -15,19 +17,78 @@ import ticket_booking_pb2_grpc as pb_grpc
 
 
 class Client:
-    def __init__(self, addr="127.0.0.1:50051"):
-        self.addr = addr
+    def __init__(self, addr="127.0.0.1:50051", timeout=3.0, max_retries=3, backoff=0.25):
+        if isinstance(addr, (list, tuple, set)):
+            seeds = [str(x) for x in addr if str(x).strip()]
+        else:
+            seeds = [str(addr)]
+        self.seed_addresses = seeds or ["127.0.0.1:50051"]
+        self.addr = self.seed_addresses[0]
+        self.timeout = timeout
+        self.max_retries = max_retries
+        self.backoff = backoff
         self.token = None
         self.user = None
         self.channel = grpc.insecure_channel(self.addr)
         self.stub = pb_grpc.ClientServiceStub(self.channel)
+
+    def _switch_server(self, address):
+        if not address:
+            return
+        if self.channel:
+            self.channel.close()
+        self.addr = str(address)
+        self.channel = grpc.insecure_channel(self.addr)
+        self.stub = pb_grpc.ClientServiceStub(self.channel)
+
+    def _next_seed(self):
+        if len(self.seed_addresses) <= 1:
+            return self.addr
+        idx = self.seed_addresses.index(self.addr) if self.addr in self.seed_addresses else 0
+        return self.seed_addresses[(idx + 1) % len(self.seed_addresses)]
+
+    @staticmethod
+    def _rpc_failed_response(method_name, err):
+        details = getattr(err, "details", lambda: str(err))()
+        return SimpleNamespace(
+            status="UNAVAILABLE",
+            message=f"{method_name} failed: {details}",
+            token="",
+            items=[],
+            redirect_to="",
+            booking_id="",
+        )
+
+    def _call_with_retry(self, method_name, request, *, redirect_on_not_leader=True):
+        attempts = 0
+        while attempts <= self.max_retries:
+            try:
+                method = getattr(self.stub, method_name)
+                res = method(request, timeout=self.timeout)
+            except grpc.RpcError as err:
+                if err.code() in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
+                    attempts += 1
+                    if attempts <= self.max_retries:
+                        time.sleep(self.backoff * attempts)
+                        self._switch_server(self._next_seed())
+                        continue
+                    return self._rpc_failed_response(method_name, err)
+                return self._rpc_failed_response(method_name, err)
+            if redirect_on_not_leader and res.status == "NOT_LEADER" and getattr(res, "redirect_to", ""):
+                self._switch_server(res.redirect_to)
+                attempts += 1
+                if attempts <= self.max_retries:
+                    time.sleep(self.backoff * attempts)
+                    continue
+            return res
+        return SimpleNamespace(status="UNAVAILABLE", message=f"{method_name} failed: request timed out.", token="", items=[], redirect_to="", booking_id="")
 
     def close(self):
         if self.channel:
             self.channel.close()
 
     def login(self, uname, pw):
-        res = self.stub.Login(pb.LoginRequest(username=uname, password=pw))
+        res = self._call_with_retry("Login", pb.LoginRequest(username=uname, password=pw))
         if res.status == "OK":
             self.token = res.token
             self.user = uname
@@ -36,7 +97,7 @@ class Client:
             return False, f"Login failed: {res.message} (status: {res.status})"
 
     def signup(self, uname, pw):
-        res = self.stub.Signup(pb.LoginRequest(username=uname, password=pw))
+        res = self._call_with_retry("Signup", pb.LoginRequest(username=uname, password=pw))
         if res.status == "OK":
             self.token = res.token
             self.user = uname
@@ -47,7 +108,7 @@ class Client:
     def logout(self):
         if not self.token:
             return False, "Not logged in."
-        res = self.stub.Logout(pb.LogoutRequest(token=self.token))
+        res = self._call_with_retry("Logout", pb.LogoutRequest(token=self.token))
         if res.status == "OK":
             self.token = None
             self.user = None
@@ -58,15 +119,16 @@ class Client:
     def get_shows(self):
         if not self.token:
             return "AUTH_FAILED", [], "Please log in first."
-        res = self.stub.Get(pb.GetRequest(token=self.token, type="SHOWS", params=json.dumps({}).encode()))
+        res = self._call_with_retry("Get", pb.GetRequest(token=self.token, type="SHOWS", params=json.dumps({}).encode()))
         items = [json.loads(it.data.decode()) for it in res.items]
         return res.status, items, res.message
 
     def get_seats(self, show_id):
         if not self.token:
             return "AUTH_FAILED", [], "Please log in first."
-        res = self.stub.Get(
-            pb.GetRequest(token=self.token, type="SEATS", params=json.dumps({"show_id": show_id}).encode())
+        res = self._call_with_retry(
+            "Get",
+            pb.GetRequest(token=self.token, type="SEATS", params=json.dumps({"show_id": show_id}).encode()),
         )
         items = [json.loads(it.data.decode()) for it in res.items]
         return res.status, items, res.message
@@ -74,7 +136,7 @@ class Client:
     def get_cluster_status(self):
         if not self.token:
             return "AUTH_FAILED", {}, "Please log in first."
-        res = self.stub.Get(pb.GetRequest(token=self.token, type="CLUSTER_STATUS"))
+        res = self._call_with_retry("Get", pb.GetRequest(token=self.token, type="CLUSTER_STATUS"))
         if res.status != "OK":
             return res.status, {}, res.message
         return res.status, json.loads(res.message), ""
@@ -82,30 +144,39 @@ class Client:
     def get_booking_analytics(self):
         if not self.token:
             return "AUTH_FAILED", [], "Please log in first."
-        res = self.stub.Get(pb.GetRequest(token=self.token, type="BOOKING_ANALYTICS"))
+        res = self._call_with_retry("Get", pb.GetRequest(token=self.token, type="BOOKING_ANALYTICS"))
         items = [json.loads(it.data.decode()) for it in res.items]
         return res.status, items, res.message
 
-    def book_seat(self, show_id, seat_id, card="4242424242424242", amount=50.0, req_id=None, hops=3):
+    def book_seat(self, show_id, seat_id, card="4242424242424242", amount=None, req_id=None, hops=3):
         if not self.token:
             return "AUTH_FAILED", "", "Please log in first."
-        body = {"show_id": show_id, "seat_id": seat_id, "card_number": card, "amount": str(amount)}
+        body = {"show_id": show_id, "seat_id": seat_id, "card_number": card}
+        if amount is not None:
+            body["amount"] = str(amount)
         if req_id:
             rid = req_id
         else:
             rid = str(uuid4())
         n = 0
         while n < hops:
-            res = self.stub.Post(
-                pb.PostRequest(token=self.token, type="BOOK_SEAT", data=json.dumps(body).encode(), request_id=rid)
-            )
+            try:
+                res = self.stub.Post(
+                    pb.PostRequest(token=self.token, type="BOOK_SEAT", data=json.dumps(body).encode(), request_id=rid),
+                    timeout=self.timeout,
+                )
+            except grpc.RpcError as err:
+                if err.code() in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
+                    n += 1
+                    if n >= hops:
+                        return "UNAVAILABLE", "", "The booking service is unavailable."
+                    time.sleep(self.backoff * n)
+                    self._switch_server(self._next_seed())
+                    continue
+                raise
             if res.status != "NOT_LEADER" or not res.redirect_to:
                 return res.status, res.booking_id, res.message
-            self.addr = res.redirect_to
-            if self.channel:
-                self.channel.close()
-            self.channel = grpc.insecure_channel(self.addr)
-            self.stub = pb_grpc.ClientServiceStub(self.channel)
+            self._switch_server(res.redirect_to)
             n = n + 1
         return "REDIRECT_FAILED", "", "Exceeded maximum redirect hops to reach cluster leader."
 
@@ -119,28 +190,36 @@ class Client:
             rid = str(uuid4())
         n = 0
         while n < hops:
-            res = self.stub.Post(
-                pb.PostRequest(token=self.token, type="CANCEL_SEAT", data=json.dumps(body).encode(), request_id=rid)
-            )
+            try:
+                res = self.stub.Post(
+                    pb.PostRequest(token=self.token, type="CANCEL_SEAT", data=json.dumps(body).encode(), request_id=rid),
+                    timeout=self.timeout,
+                )
+            except grpc.RpcError as err:
+                if err.code() in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
+                    n += 1
+                    if n >= hops:
+                        return "UNAVAILABLE", "", "The booking service is unavailable."
+                    time.sleep(self.backoff * n)
+                    self._switch_server(self._next_seed())
+                    continue
+                raise
             if res.status != "NOT_LEADER" or not res.redirect_to:
                 return res.status, res.booking_id, res.message
-            self.addr = res.redirect_to
-            if self.channel:
-                self.channel.close()
-            self.channel = grpc.insecure_channel(self.addr)
-            self.stub = pb_grpc.ClientServiceStub(self.channel)
+            self._switch_server(res.redirect_to)
             n = n + 1
         return "REDIRECT_FAILED", "", "Exceeded maximum redirect hops to reach cluster leader."
 
     def ask_faq(self, query, context="", show_id=""):
         if not self.token:
             return f"FAQ failed (AUTH_FAILED): Please log in first."
-        res = self.stub.Get(
+        res = self._call_with_retry(
+            "Get",
             pb.GetRequest(
                 token=self.token,
                 type="FAQ",
                 params=json.dumps({"query": query, "context": context, "show_id": show_id}).encode(),
-            )
+            ),
         )
         if res.status == "OK":
             return res.message

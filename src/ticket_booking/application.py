@@ -93,8 +93,10 @@ class BookingApp:
             if amt_str != "":
                 try:
                     money = float(amt_str)
+                    if not (money == money and abs(money) != float("inf")):
+                        raise ValueError
                 except (TypeError, ValueError):
-                    return Outcome("INVALID_AMOUNT", "Payment amount is not a valid number.")
+                    return Outcome("INVALID_AMOUNT", "Payment amount is not a valid finite number.")
             card = data.get("card_number", "4242424242424242")
             show_id = data.get("show_id", "")
             seat_id = data.get("seat_id", "")
@@ -103,17 +105,36 @@ class BookingApp:
                 bit = part.strip()
                 if bit != "" and bit not in picked:
                     picked.append(bit)
-            if money is None and picked:
-                money = self.pay.price * len(picked)
+            expected = self.pay.price * len(picked)
+            if money is None:
+                money = expected
+            if money < expected:
+                return Outcome("INVALID_AMOUNT", "Payment amount is below the required booking total.")
+            if money != money or abs(money) == float("inf"):
+                return Outcome("INVALID_AMOUNT", "Payment amount is not a finite number.")
             seat_id = ",".join(picked)
 
             def pay():
                 r = self.pay.charge(user, money, card, req_id)
                 return r.status, r.message, r.txn
 
-            return self.seats.book(user, show_id, seat_id, req_id, pay)
+            return self.seats.book(
+                user,
+                show_id,
+                seat_id,
+                req_id,
+                pay,
+                kind="BOOK_SEAT",
+                payload={"show_id": show_id, "seat_id": seat_id},
+            )
         if kind == "CANCEL_SEAT":
-            out = self.seats.cancel(user, data.get("booking_id", ""), req_id)
+            out = self.seats.cancel(
+                user,
+                data.get("booking_id", ""),
+                req_id,
+                kind="CANCEL_SEAT",
+                payload={"booking_id": data.get("booking_id", "")},
+            )
             if out.status == "OK" and out.txn:
                 self.pay.refund(out.txn)
             return out
@@ -125,24 +146,39 @@ class BookingApp:
             return Outcome("AUTH_FAILED", "A valid session token is required.")
         if not req_id:
             return Outcome("INVALID_REQUEST", "A request_id is required for Raft writes.")
-        already = self.seats.result(req_id)
-        if already:
-            return already
+        if kind == "BOOK_SEAT":
+            payload = {"show_id": data.get("show_id", ""), "seat_id": str(data.get("seat_id", ""))}
+            already = self.seats.result(req_id, user, kind, payload)
+            if already:
+                return already
+
+        elif kind == "CANCEL_SEAT":
+            payload = {"booking_id": data.get("booking_id", "")}
+            already = self.seats.result(req_id, user, kind, payload)
+            if already:
+                return already
+        else:
+            return Outcome("INVALID_REQUEST", "Unsupported post request type.")
         if kind == "BOOK_SEAT":
             amt_str = data.get("amount", "")
             money = None
             if amt_str != "":
                 try:
                     money = float(amt_str)
+                    if not (money == money and abs(money) != float("inf")):
+                        raise ValueError
                 except (TypeError, ValueError):
-                    return Outcome("INVALID_AMOUNT", "Payment amount is not a valid number.")
+                    return Outcome("INVALID_AMOUNT", "Payment amount is not a valid finite number.")
             picked = []
             for part in str(data.get("seat_id", "")).replace(";", ",").split(","):
                 bit = part.strip()
                 if bit != "" and bit not in picked:
                     picked.append(bit)
-            if money is None and picked:
-                money = self.pay.price * len(picked)
+            expected = self.pay.price * len(picked)
+            if money is None:
+                money = expected
+            if money < expected:
+                return Outcome("INVALID_AMOUNT", "Payment amount is below the required booking total.")
             check = self.pay.check(money, data.get("card_number", "4242424242424242"))
             txn = f"tx_{uuid5(NAMESPACE_URL, 'ticket-booking/' + req_id).hex[:12]}"
             body = {
