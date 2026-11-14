@@ -13,9 +13,9 @@ Every task in the Milestone 2 brief was implemented and verified by running it: 
 closed (two real defects found by failing tests and fixed), Docker Compose topology verified end
 to end on this machine, Streamlit UI with Booking / Cluster Observatory / Demo Lab built as a
 pure gRPC client, stress test run with a leader kill, LLM boundary hardened, documentation
-written. Final full suite after the readiness pass: **78 passed** in two consecutive runs
-(207 s, 215 s). A fresh clone builds with `--no-cache` and passes the Docker and UI
-verification scripts (section 10).
+written. Final full suite after the quality pass (section 11): **100 passed** in two
+consecutive runs (273 s, 235 s). A fresh clone builds with `--no-cache` and passes the Docker
+and UI verification scripts (section 10); both scripts also pass on a used cluster (section 11).
 
 Limitations that remain (details in section 7): no log compaction (latency grows with log
 length), static membership, no leader lease, single-machine fault injection, keyword-based
@@ -140,18 +140,15 @@ Failures seen during the work, and what they were:
 
 ## 7. Known limitations
 
-- No log compaction/snapshots; request-ID dedup scans the whole log (O(n)), so latency grows
-  with log length.
+- No log compaction/snapshots; the log and the request-ID index grow with every write.
 - Static membership; no joint consensus.
 - No leader lease / check-quorum: an isolated leader keeps its role (but cannot commit or
   serve reads).
 - Each linearizable read costs a heartbeat round.
 - Fault injection is client-side on real local sockets, not OS-level partitions.
-- FAQ out-of-domain detection is keyword based (NLTK stopwords + FAQ keywords); questions that
-  share a keyword with the FAQ pass the gate and are answered by the model with the FAQ context.
+- The FAQ domain gate is a fixed booking vocabulary plus FAQ retrieval; an off-topic question
+  that uses a booking word (e.g. "show me a joke") still reaches the model.
 - `CLUSTER_STATUS` is node-local and requires a session.
-- The containerised Ollama option (`docker compose --profile ollama up -d`) was not exercised;
-  all LLM checks used host Ollama via `OLLAMA_URL`.
 - Legacy (non-Raft, M1) mode: a `--follower` run as a separate process does not share sessions
   with the leader (pre-existing; Raft mode is the supported multi-node mode).
 - `docker compose build` downloads packages and NLTK data; a network outage fails the build
@@ -222,3 +219,25 @@ have this problem.
 
 Final readiness: **READY WITH LIMITATIONS**. The limitations are the design limits in section 7
 and the containerised-Ollama profile not being exercised; no known defect is open.
+
+
+## 11. Whole-project quality pass
+
+Full audit: [`final-project-audit.md`](final-project-audit.md).
+
+Fixed (each with a test that failed first): server-authoritative pricing on both write paths;
+identical Raft retry with an unnormalized seat list returning `REQUEST_CONFLICT`; off-topic
+FAQ questions reaching the LLM; CLI without `mybookings`/`--card`. Improved: request-ID index
+instead of a full-log scan; `ollama-pull` waits for a healthy `ollama`; verification scripts
+pick free seats. Refactors are listed in the audit.
+
+| check | command | result |
+|---|---|---|
+| new tests | `pytest tests/test_final_quality.py` | 11 failed before their fixes (10 in the first run plus the retry-normalization test); the 2 index guards, 7 in-domain and 2 cross-user tests passed throughout; 22 passed after |
+| full suite x2 | `cd src; python -m pytest -q -rf` | `100 passed in 273.33s`, `100 passed in 234.61s` |
+| Docker on used volumes | `python src/scripts/verify_docker.py` | ALL CHECKS PASSED (26) |
+| UI on used volumes | `python src/scripts/verify_ui_docker.py` | ALL CHECKS PASSED (43) |
+| bounded stress | `stress_m2.py --duration 20 --workers 12 --failover none ...` | 7/7 invariants PASS; 182.3 write req/s, p50 47.2 ms (run 2: 81.1 req/s, p50 115.1 ms) |
+| containerised Ollama | `docker compose --profile ollama up -d` | `ollama` healthy -> `ollama-pull` success; FAQ generated via `http://ollama:11434`; ollama log `POST /api/generate 200` |
+
+Final readiness: **READY WITH LIMITATIONS** (design limits in section 7; no known open defect).

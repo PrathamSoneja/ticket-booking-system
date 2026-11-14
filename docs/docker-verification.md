@@ -217,3 +217,110 @@ volumes of the original `project` stack also existed. Output (gRPC C-core INFO l
 - PASS: committed log replayed (commit index did not go backwards) -- before=8
 
 ## Result: ALL CHECKS PASSED
+
+
+## Final quality-pass run (commit `c55199e` image, used volumes)
+
+Run on the main `project` stack whose volumes already held ~8,800 committed entries and many
+booked seats (not a clean start); the script now picks free seats instead of fixed ones.
+
+```bash
+docker compose build
+OLLAMA_URL=http://host.docker.internal:11434/api/generate docker compose up -d
+python src/scripts/verify_docker.py
+```
+
+# Docker verification run 2026-11-14 17:05:42 +0530
+
+## 1. Startup and health
+- PASS: all five services healthy -- {'llm': 'healthy', 'app-1': 'healthy', 'app-2': 'healthy', 'app-3': 'healthy', 'ui': 'healthy'}
+- PASS: UI health endpoint -- ok
+- PASS: no Docker socket (or any volume) mounted into UI -- []
+- PASS: login via gRPC
+
+## 2. Exactly one leader
+  | node | role | term | leader | log | commit | applied | log digest | state digest |
+  |---|---|---|---|---|---|---|---|---|
+  | node-1 | leader | 22 | node-1 | 8869 | 8869 | 8869 | 19537bc328f92f9b | 7982b518f8a22d9f |
+  | node-2 | follower | 22 | node-1 | 8869 | 8869 | 8869 | 19537bc328f92f9b | 7982b518f8a22d9f |
+  | node-3 | follower | 22 | node-1 | 8869 | 8869 | 8869 | 19537bc328f92f9b | 7982b518f8a22d9f |
+- PASS: exactly one leader and two followers -- ['leader', 'follower', 'follower']
+
+## 3. Booking and replication
+- PASS: book show-1/A5 -- OK f7b94c9e-613d-5b8d-85c1-0b9b3213b8b2
+  | node | role | term | leader | log | commit | applied | log digest | state digest |
+  |---|---|---|---|---|---|---|---|---|
+  | node-1 | leader | 22 | node-1 | 8870 | 8870 | 8870 | 0dd6b90647741dba | 7d2564b3f07c20b8 |
+  | node-2 | follower | 22 | node-1 | 8870 | 8870 | 8870 | 0dd6b90647741dba | 7d2564b3f07c20b8 |
+  | node-3 | follower | 22 | node-1 | 8870 | 8870 | 8870 | 0dd6b90647741dba | 7d2564b3f07c20b8 |
+- PASS: all nodes converge to identical log and state digests
+
+## 4. Leader failure
+  leader before failure: node-1
+  `docker compose stop app-1` -> exit 0 (3.7s)
+- PASS: new leader elected among survivors -- node-2 after 4.45s (includes container stop time)
+- PASS: read-after-write: A5 still BOOKED via new leader -- OK/BOOKED
+- PASS: book show-1/A6 with old leader down -- OK ec15dcf9-b779-5f54-93f6-307ee5fc64ff
+
+## 5. Old-leader restart and catch-up
+  `docker compose start app-1` -> exit 0 (0.5s)
+  | node | role | term | leader | log | commit | applied | log digest | state digest |
+  |---|---|---|---|---|---|---|---|---|
+  | node-1 | follower | 23 | node-2 | 8872 | 8872 | 8872 | 5f6ccc5743e602ea | 1ed4d07790ae7b53 |
+  | node-2 | leader | 23 | node-2 | 8872 | 8872 | 8872 | 5f6ccc5743e602ea | 1ed4d07790ae7b53 |
+  | node-3 | follower | 23 | node-2 | 8872 | 8872 | 8872 | 5f6ccc5743e602ea | 1ed4d07790ae7b53 |
+- PASS: node-1 rejoined as follower with identical committed log and state
+
+## 6. No quorum
+  `docker compose stop app-1` -> exit 0 (3.7s)
+  `docker compose stop app-3` -> exit 0 (3.6s)
+- PASS: booking without quorum is not acknowledged -- UNAVAILABLE: The booking service is unavailable.
+- PASS: linearizable read refused without quorum -- NO_QUORUM
+  `docker compose start app-1` -> exit 0 (0.5s)
+- PASS: retry with same request ID succeeds once quorum returns -- OK 294df2c8-641b-5cf5-8755-ed924ce441bb
+- PASS: exactly one booking and one logical charge for that request ID -- [{'booking_id': '294df2c8-641b-5cf5-8755-ed924ce441bb', 'show_id': 'show-1', 'seat_id': 'A7', 'status': 'CONFIRMED', 'txn': 'tx_294df2c8641b', 'charges': 1, 'amount': 50.0, 'refunded': False}]
+  `docker compose start app-3` -> exit 0 (0.5s)
+- PASS: cluster reconverges after quorum loss
+
+## 7. LLM node: answer, outage, recovery
+- PASS: FAQ answered (LLM via gRPC; Ollama runtime reachable) or honestly labelled fallback -- OK; generated=True fallback=False correlation=faq-314a09715ba2401a8f4e1ac10b060838
+  LLM status: OK; answer starts: 'Bookings can be cancelled up to 2 hours prior to showtime via the CANCEL_SEAT request.'
+- PASS: out-of-domain query rejected -- OUT_OF_DOMAIN
+  `docker compose stop llm` -> exit 0 (3.6s)
+- PASS: LLM outage -> labelled verbatim fallback -- LLM_UNAVAILABLE: 'The FAQ service could not be reached. Fallback - matching FAQ text shown verbatim, not AI-generated:'
+- PASS: booking still works while LLM node is down -- OK 83963cb4-fdfc-5bcb-8170-9c86a7d33400
+  `docker compose start llm` -> exit 0 (0.5s)
+
+## 8. Full restart persistence (`down` keeps named volumes)
+  `docker compose down` -> exit 0 (4.6s)
+- PASS: named Raft volumes survive `docker compose down` -- ['project_node-1-data', 'project_node-2-data', 'project_node-3-data']
+  `docker compose up -d` -> exit 0 (1.6s)
+- PASS: show-1/A5 still BOOKED after full restart -- OK/BOOKED
+- PASS: show-1/A6 still BOOKED after full restart -- OK/BOOKED
+- PASS: show-1/A7 still BOOKED after full restart -- OK/BOOKED
+- PASS: show-1/A8 still BOOKED after full restart -- OK/BOOKED
+  | node | role | term | leader | log | commit | applied | log digest | state digest |
+  |---|---|---|---|---|---|---|---|---|
+  | node-1 | follower | 32 | node-3 | 8877 | 8877 | 8877 | 83c737c729dd9898 | 1a36ae039db60b69 |
+  | node-2 | follower | 32 | node-3 | 8877 | 8877 | 8877 | 83c737c729dd9898 | 1a36ae039db60b69 |
+  | node-3 | leader | 32 | node-3 | 8877 | 8877 | 8877 | 83c737c729dd9898 | 1a36ae039db60b69 |
+- PASS: committed log replayed (commit index did not go backwards) -- before=8876
+
+## Result: ALL CHECKS PASSED
+
+### Containerised Ollama profile
+
+```bash
+docker compose --profile ollama up -d                       # OLLAMA_URL unset
+docker compose --profile ollama up -d --force-recreate ollama ollama-pull
+```
+
+- A stale `ollama` container left over from the original pre-M2 compose stack referenced a
+  removed network ("network ... not found"); `--force-recreate` replaced it (volume kept).
+- `ollama` now has a health check (`ollama list`) and `ollama-pull` waits for
+  `service_healthy`; observed order: `ollama` healthy, then `ollama-pull` ran and exited 0
+  (`success`), `ollama list` shows `llama3.2:1b`.
+- `llm` container environment: `OLLAMA_URL=http://ollama:11434/api/generate`.
+- FAQ "How do I cancel a booking?" returned `OK`, `generated=True`, `fallback=False`; the
+  `ollama` container log shows `POST "/api/generate"` -> `200` (11.63 s, first model load).
+- `docker compose --profile ollama down` kept `project_node-1..3-data` and `project_ollama-data`.

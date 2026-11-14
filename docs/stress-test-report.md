@@ -103,8 +103,7 @@ Run 2 was executed after run 1 on the same cluster, so its Raft log started at ~
 entries and ended above 5,000. `RaftNode.propose()` scans the entire log for an existing
 entry with the same request ID (idempotency) while holding the node lock, and seat reads
 pay for the read-barrier heartbeat round. The higher p50 in run 2 is consistent with this
-O(log length) cost. It is recorded as a known limitation (no log compaction/snapshots, no
-request-ID index); it does not affect correctness.
+O(log length) cost. Run 3 below re-measures after replacing the scan with an index.
 
 ## Reproducing on a clean cluster
 
@@ -117,3 +116,28 @@ python src/scripts/stress_m2.py --duration 30 --workers 12 --failover docker
 The in-process equivalents (no Docker) are the pytest cases
 `test_concurrent_booking_during_election_churn` and `test_fault_injected_raft_rpcs_keep_safety`
 in `src/tests/test_raft_m2.py`.
+
+
+## Run 3: after the request-ID index (quality pass, commit `c55199e`)
+
+`RaftNode.propose()` no longer scans the log for an existing request ID; an index rebuilt at
+startup answers the lookup. Same cluster and parameters as run 2, on a larger log
+(5,115 entries at start, commit index 8,810 at the end), fresh seats:
+
+```bash
+python src/scripts/stress_m2.py --duration 20 --workers 12 --failover none --shows show-2,show-3 --race-seat show-8/A44 --dup-seat show-8/A43 --json docs/stress-results/run3-index.json
+```
+
+| metric | run 2 (log scan, log 3.3k -> 5k) | run 3 (index, log 5.1k -> 8.8k) |
+|---|---|---|
+| write requests | 1625 | 3648 (98 OK, 3550 ALREADY_BOOKED) |
+| write throughput | 81.1 req/s | 182.3 req/s |
+| write error rate | 0.0 | 0.0 |
+| write latency p50 / p95 / p99 / max | 115.1 / 213.0 / 243.1 / 259.7 ms | 47.2 / 84.7 / 108.9 / 153.0 ms |
+| read throughput | 26.8 req/s | 60.5 req/s |
+| read latency p50 / p95 / p99 / max | 74.6 / 115.8 / 127.9 / 145.8 ms | 34.4 / 47.0 / 60.9 / 81.9 ms |
+| invariant checks | 7/7 PASS | 7/7 PASS (race 1 OK / 15 ALREADY_BOOKED; 10 duplicates -> 1 booking) |
+
+The image was rebuilt for run 3, so it also includes the other quality-pass changes; the
+request-ID lookup is the change on the write hot path. Raw JSON:
+[`stress-results/run3-index.json`](stress-results/run3-index.json).

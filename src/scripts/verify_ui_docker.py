@@ -106,13 +106,23 @@ def free_seats(at, show_id, n):
     return [cb.label for cb in at.checkbox if cb.key and cb.key.startswith(f"seat-{show_id}-") and not cb.disabled][:n]
 
 
-def free_seat(token, show):
+def free_slot(token, prefer):
     c = ui.Config().client(token)
     try:
-        _, seats, _ = c.get_seats(show)
+        for show in [prefer] + [x for x in ["show-1", "show-2", "show-3", "show-4", "show-5", "show-6", "show-7", "show-8"] if x != prefer]:
+            _, seats, _ = c.get_seats(show)
+            free = [s["seat_id"] for s in seats if s["status"] == "AVAILABLE"]
+            if free:
+                return show, free[0]
     finally:
         c.close()
-    return next(s["seat_id"] for s in seats if s["status"] == "AVAILABLE")
+    raise SystemExit("no free seat left in any show")
+
+
+def fill(at, key, prefer):
+    show, seat = free_slot(at.session_state["token"], prefer)
+    at.text_input(key=f"{key}-show").input(show)
+    at.text_input(key=f"{key}-seat").input(seat)
 
 
 def main():
@@ -213,13 +223,11 @@ def main():
     out()
     out("## Demo Lab")
     view(at, "Demo Lab")
-    at.text_input(key="race-show").input("show-8")
-    at.text_input(key="race-seat").input(free_seat(at.session_state["token"], "show-8"))
+    fill(at, "race", "show-8")
     button(at, "Run race").click().run()
     s = texts(at, "success")
     check("seat race: all invariant checks PASS", s.count("PASS:") >= 4 and "FAIL" not in texts(at, "error"), s[:200])
-    at.text_input(key="retry-show").input("show-7")
-    at.text_input(key="retry-seat").input(free_seat(at.session_state["token"], "show-7"))
+    fill(at, "retry", "show-7")
     button(at, "Run retry").click().run()
     s = texts(at, "success")
     check("same-key retry: one booking, charged once (PASS)", "PASS: one booking record, charged exactly once" in s)
@@ -243,8 +251,7 @@ def main():
     snap = ui.observe(ui.Config(), at.session_state["token"])
     lead = snap["leader"]
     others = [n for n in SERVICE if n != lead]
-    at.text_input(key="nq-show").input("show-6")
-    at.text_input(key="nq-seat").input(free_seat(at.session_state["token"], "show-6"))
+    fill(at, "nq", "show-6")
     compose("stop", SERVICE[others[0]], SERVICE[others[1]])
     button(at, "Attempt booking now").click().run()
     check("no quorum: booking not committed", "Not committed" in texts(at, "info"), texts(at, "info")[:160])

@@ -1,0 +1,154 @@
+{
+  "command": "src/scripts/stress_m2.py --duration 20 --workers 12 --failover none --shows show-2,show-3 --race-seat show-8/A44 --dup-seat show-8/A43 --json docs/stress-results/run3-index.json",
+  "started": "2026-11-14 17:01:38 +0530",
+  "env": {
+    "python": "3.13.14",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "nodes": [
+      "127.0.0.1:50051",
+      "127.0.0.1:50052",
+      "127.0.0.1:50053"
+    ]
+  },
+  "race": {
+    "seat": "show-8/A44",
+    "clients": 16,
+    "statuses": {
+      "OK": 1,
+      "ALREADY_BOOKED": 15
+    },
+    "ok_booking_ids": [
+      "95c5b6b0-a9a9-50c2-9591-e897d9ba2bb6"
+    ],
+    "latency": {
+      "n": 16,
+      "p50_ms": 61.1,
+      "p95_ms": 73.6,
+      "p99_ms": 74.9,
+      "max_ms": 74.9,
+      "mean_ms": 60.6
+    }
+  },
+  "dup": {
+    "seat": "show-8/A43",
+    "copies": 10,
+    "request_id": "dup-d603af5df71f47b69774b719c0f0ae1e",
+    "statuses": [
+      "OK"
+    ],
+    "booking_ids": [
+      "ad022e9e-d547-54a8-966d-fae0511c96b1"
+    ]
+  },
+  "mixed": {
+    "workers": 12,
+    "duration_s": 20.02,
+    "failover": "none",
+    "events": [],
+    "write_requests": 3648,
+    "write_statuses": {
+      "OK": 98,
+      "ALREADY_BOOKED": 3550
+    },
+    "write_throughput_rps": 182.3,
+    "write_error_rate": 0.0,
+    "write_latency_end_to_end": {
+      "n": 3648,
+      "p50_ms": 47.2,
+      "p95_ms": 84.7,
+      "p99_ms": 108.9,
+      "max_ms": 153.0,
+      "mean_ms": 53.7
+    },
+    "writes_needing_retry": 0,
+    "read_requests": 1211,
+    "read_statuses": {
+      "OK": 1211
+    },
+    "read_throughput_rps": 60.5,
+    "read_latency": {
+      "n": 1211,
+      "p50_ms": 34.4,
+      "p95_ms": 47.0,
+      "p99_ms": 60.9,
+      "max_ms": 81.9,
+      "mean_ms": 35.4
+    }
+  },
+  "checks": [
+    {
+      "check": "race: exactly one OK booking for the contested seat",
+      "passed": true,
+      "detail": {
+        "OK": 1,
+        "ALREADY_BOOKED": 15
+      }
+    },
+    {
+      "check": "dup: all copies of one request ID return one booking ID",
+      "passed": true,
+      "detail": {
+        "seat": "show-8/A43",
+        "copies": 10,
+        "request_id": "dup-d603af5df71f47b69774b719c0f0ae1e",
+        "statuses": [
+          "OK"
+        ],
+        "booking_ids": [
+          "ad022e9e-d547-54a8-966d-fae0511c96b1"
+        ]
+      }
+    },
+    {
+      "check": "all nodes converge to identical committed-log and state digests",
+      "passed": true,
+      "detail": {
+        "127.0.0.1:50051": {
+          "node_id": "node-1",
+          "role": "follower",
+          "term": 12,
+          "commit_index": 8810,
+          "log_digest": "23a1069a851b7636",
+          "state_digest": "419ef007e2da8361"
+        },
+        "127.0.0.1:50052": {
+          "node_id": "node-2",
+          "role": "leader",
+          "term": 12,
+          "commit_index": 8810,
+          "log_digest": "23a1069a851b7636",
+          "state_digest": "419ef007e2da8361"
+        },
+        "127.0.0.1:50053": {
+          "node_id": "node-3",
+          "role": "follower",
+          "term": 12,
+          "commit_index": 8810,
+          "log_digest": "23a1069a851b7636",
+          "state_digest": "419ef007e2da8361"
+        }
+      }
+    },
+    {
+      "check": "no seat held by two confirmed bookings (no overbooking)",
+      "passed": true,
+      "detail": "310 seats held"
+    },
+    {
+      "check": "every OK-acknowledged booking is present and CONFIRMED (no lost commit)",
+      "passed": true,
+      "detail": "100 acknowledged"
+    },
+    {
+      "check": "exactly one logical charge per booking (no duplicate charge)",
+      "passed": true,
+      "detail": "309 bookings"
+    },
+    {
+      "check": "linearizable seat map agrees with confirmed bookings",
+      "passed": true,
+      "detail": "agree"
+    }
+  ],
+  "passed": true
+}

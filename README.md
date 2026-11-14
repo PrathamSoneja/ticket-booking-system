@@ -181,10 +181,22 @@ Book multiple seats (up to 5 seats):
 python -m ticket_booking.client --action book --show-id show-1 --seat-id A1,A2,A3
 ```
 
+List your own bookings (booking IDs, status, charge count, refund):
+
+```bash
+python -m ticket_booking.client --action mybookings
+```
+
 Cancel a booking:
 
 ```bash
 python -m ticket_booking.client --action cancel --booking-id <booking_id_from_booking>
+```
+
+Book with the declining mock card (no booking, no charge):
+
+```bash
+python -m ticket_booking.client --action book --show-id show-1 --seat-id A9 --card 4000000000000000
 ```
 
 Ask an FAQ support question:
@@ -206,10 +218,11 @@ Client command-line options:
 - --server: Target server address (default: 127.0.0.1:50051)
 - --username: Username for authentication (default: alice)
 - --password: Password for authentication (default: wonderland)
-- --action: Operation to execute (signup, shows, seats, book, cancel, faq, status, analytics; default: shows)
+- --action: Operation to execute (signup, shows, seats, book, cancel, mybookings, faq, status, analytics; default: shows)
 - --show-id: Show identifier for seats, bookings, or FAQs (default: show-1)
 - --seat-id: Seat identifier or comma-separated list of up to 5 seats (default: A1)
 - --booking-id: Booking identifier used for cancellations
+- --card: Mock card number for bookings (default 4242424242424242 approves; numbers starting or ending in 0000 are declined)
 - --query: Support question string for FAQ requests
 
 
@@ -554,6 +567,7 @@ python -m pytest tests/test_raft_m2.py tests/test_m2_features.py tests/test_ui.p
   My Bookings / Quote / refund, payment decline, client redirect map, status digests.
 - `tests/test_ui.py`: UI import boundary, Observatory and Demo-Lab helpers against a live
   3-node cluster, headless Streamlit (`AppTest`) runs of all three views.
+- `tests/test_final_quality.py`: server-side pricing, retry with an unnormalized seat list, request-ID index (no log scan, rebuilt on restart, pruned on truncation), FAQ domain gate, CLI `mybookings`/`--card`, cross-user cancellation.
 - `tests/raft_faults.py` is a helper module (fault-injecting gRPC interceptor), not a test file.
 
 The LLM tests in `test_llm.py` and `test_integration.py::test_cancel_faq` still need a running
@@ -592,12 +606,12 @@ Security notes:
 
 Known limitations:
 
-- No log compaction or snapshots; `propose()` scans the whole log for request-ID dedup, so
-  latency grows with log length (visible in the stress report).
+- No log compaction or snapshots; the log and the in-memory request-ID index grow with every
+  write (lookups are O(1); startup replays the whole log).
 - No membership changes; the peer list is static.
 - No leader lease / check-quorum: an isolated leader keeps its role until it hears a higher
   term, but it can neither commit writes nor serve reads (read barrier).
-- `CLUSTER_STATUS` is node-local and may lag; the FAQ out-of-domain filter is keyword based.
+- `CLUSTER_STATUS` is node-local and may lag; the FAQ domain gate is a fixed vocabulary plus FAQ retrieval, so an off-topic question that uses a booking word ("show me a joke") can still reach the model, which is instructed to answer only from the FAQ context.
 - Seeded demo accounts (`alice`/`wonderland`, ...) exist on every node for demonstration.
 
 Attribution: Raft follows Ongaro and Ousterhout, "In Search of an Understandable Consensus

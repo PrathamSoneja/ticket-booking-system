@@ -104,14 +104,17 @@ def read_seat(client, show, seat, deadline=15):
         time.sleep(0.3)
 
 
-def free_seat(client, show):
-    end = time.monotonic() + 15
-    st, seats, _ = client.get_seats(show)
-    while st != "OK" and time.monotonic() < end:
-        time.sleep(0.3)
+def free_slot(client, prefer):
+    for show in [prefer] + [x for x in ["show-1", "show-2", "show-3", "show-4", "show-5", "show-6", "show-7", "show-8"] if x != prefer]:
+        end = time.monotonic() + 15
         st, seats, _ = client.get_seats(show)
-    free = [s["seat_id"] for s in seats if s["status"] == "AVAILABLE"]
-    return free[0] if free else None
+        while st != "OK" and time.monotonic() < end:
+            time.sleep(0.3)
+            st, seats, _ = client.get_seats(show)
+        free = [s["seat_id"] for s in seats if s["status"] == "AVAILABLE"]
+        if free:
+            return show, free[0]
+    return prefer, None
 
 
 def wait_converged(token, timeout=30):
@@ -164,9 +167,9 @@ def main():
 
     out()
     out("## 3. Booking and replication")
-    seat1 = free_seat(client, "show-1")
-    st, bid1, msg, _ = book(client, "show-1", seat1)
-    check(f"book show-1/{seat1}", st == "OK", f"{st} {bid1}")
+    show1, seat1 = free_slot(client, "show-1")
+    st, bid1, msg, _ = book(client, show1, seat1)
+    check(f"book {show1}/{seat1}", st == "OK", f"{st} {bid1}")
     conv, snap = wait_converged(token)
     table(snap)
     check("all nodes converge to identical log and state digests", conv)
@@ -180,11 +183,11 @@ def main():
     new, snap = wait_leader(token, exclude=(lead,))
     failover = time.monotonic() - t0
     check("new leader elected among survivors", new is not None and new != lead, f"{new} after {failover:.2f}s (includes container stop time)")
-    st, state = read_seat(client, "show-1", seat1)
+    st, state = read_seat(client, show1, seat1)
     check(f"read-after-write: {seat1} still BOOKED via new leader", st == "OK" and state == "BOOKED", f"{st}/{state}")
-    seat2 = free_seat(client, "show-1")
-    st, bid2, msg, _ = book(client, "show-1", seat2)
-    check(f"book show-1/{seat2} with old leader down", st == "OK", f"{st} {bid2}")
+    show2, seat2 = free_slot(client, show1)
+    st, bid2, msg, _ = book(client, show2, seat2)
+    check(f"book {show2}/{seat2} with old leader down", st == "OK", f"{st} {bid2}")
 
     out()
     out("## 5. Old-leader restart and catch-up")
@@ -198,19 +201,19 @@ def main():
     out("## 6. No quorum")
     lead, _ = wait_leader(token)
     others = [n for n in NODES if n != lead]
+    show3, seat3 = free_slot(client, "show-2")
     for n in others:
         compose("stop", SERVICE[n])
     single = Client(NODES[lead], timeout=3.0, max_retries=0)
     single.token = token
-    seat3 = "A49"
     rid = "docker-noquorum-" + uuid4().hex[:8]
-    st, bid, msg = single.book_seat("show-2", seat3, req_id=rid, hops=1)
+    st, bid, msg = single.book_seat(show3, seat3, req_id=rid, hops=1)
     check("booking without quorum is not acknowledged", st != "OK", f"{st}: {msg}")
-    st_r, _, msg_r = single.get_seats("show-2")
+    st_r, _, msg_r = single.get_seats(show3)
     check("linearizable read refused without quorum", st_r != "OK", st_r)
     compose("start", SERVICE[others[0]])
     wait_healthy([SERVICE[others[0]]], timeout=60)
-    st, bid3, msg, _ = book(client, "show-2", seat3, rid=rid, deadline=30)
+    st, bid3, msg, _ = book(client, show3, seat3, rid=rid, deadline=30)
     check("retry with same request ID succeeds once quorum returns", st == "OK", f"{st} {bid3}")
     _, rows, _ = client.get_my_bookings()
     mine = [r for r in rows if r["booking_id"] == bid3]
@@ -232,8 +235,8 @@ def main():
     compose("stop", "llm")
     st, text, sup = faq.ask_faq_detailed("Is payment refundable on cancellation?")
     check("LLM outage -> labelled verbatim fallback", st == "LLM_UNAVAILABLE" and sup.get("fallback") is True, f"{st}: {text[:100]!r}")
-    seat4 = free_seat(client, "show-3")
-    st, bid4, msg, _ = book(client, "show-3", seat4)
+    show4, seat4 = free_slot(client, "show-3")
+    st, bid4, msg, _ = book(client, show4, seat4)
     check("booking still works while LLM node is down", st == "OK", f"{st} {bid4}")
     compose("start", "llm")
     wait_healthy(["llm"], timeout=60)
@@ -257,7 +260,7 @@ def main():
         time.sleep(1)
     token2 = client2.token
     wait_leader(token2)
-    for show, seat in (("show-1", seat1), ("show-1", seat2), ("show-2", seat3), ("show-3", seat4)):
+    for show, seat in ((show1, seat1), (show2, seat2), (show3, seat3), (show4, seat4)):
         st, state = read_seat(client2, show, seat)
         check(f"{show}/{seat} still BOOKED after full restart", st == "OK" and state == "BOOKED", f"{st}/{state}")
     conv, after = wait_converged(token2, timeout=45)
