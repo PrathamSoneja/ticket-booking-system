@@ -4,19 +4,20 @@ Deadline: 18 Nov 2026 (hard deadline 20 Nov 2026).
 
 ## Code and repository
 
-- [ ] Commit `src/requirements-ui.txt` (the committed Dockerfile needs it; it is untracked after `915a084`)
-- [ ] Decide on the `docs/` line in `.gitignore`: remove it so the reports are committed, or add `docs/` to the zip by hand
-- [ ] `python -m pytest` passes from `src` with Ollama running (record the count in the completion report)
-- [ ] `docker compose build` and `docker compose up -d` work from a clean clone
+- [x] One dependency file: `src/requirements.txt` (Streamlit included; `requirements-ui.txt` removed)
+- [x] `docs/` and `src/ui/` committed (`docs/` no longer git-ignored)
+- [x] `python -m pytest` passes from `src` with Ollama running: 78 passed (twice)
+- [x] `docker compose build --no-cache` and `docker compose up -d` work from a clean clone (`docs/docker-verification.md`)
+- [ ] Push to the remote (not done automatically)
 - [ ] `src/.venv`, `.pytest_cache`, `__pycache__`, `catalog.db*`, `.data/` excluded from the zip
-- [ ] No secrets or real card numbers in the repository (only seeded demo accounts and mock cards)
+- [x] No secrets, real card numbers or absolute local paths in the repository (only seeded demo accounts and mock cards)
 
 ## Zip contents (code + readme)
 
 - [ ] `README.md` (setup, deployment, usage, Docker, UI, tests, requirement matrix)
 - [ ] `docker-compose.yml`, `src/` (code, proto, tests, scripts, `ui/`, Dockerfile, requirements)
 - [ ] `docs/`: `raft-design.md`, `docker-verification.md`, `stress-test-report.md`,
-      `stress-results/`, `milestone2-audit.md`, `milestone2-completion-report.md`,
+      `stress-results/`, `ui-verification.md`, `milestone2-audit.md`, `milestone2-completion-report.md`,
       `demo-script.md`
 - [ ] Assignment PDF only if the instructor wants it included
 

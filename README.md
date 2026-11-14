@@ -476,7 +476,13 @@ src/.venv/Scripts/python.exe src/scripts/verify_docker.py
 src/.venv/Scripts/python.exe src/scripts/stress_m2.py --duration 30 --workers 12 --failover docker
 ```
 
+```bash
+src/.venv/Scripts/python.exe src/scripts/verify_ui_docker.py
+```
+
 `verify_docker.py` stops/starts containers and runs `docker compose down` + `up -d` (volumes kept).
+`verify_ui_docker.py` drives every Streamlit view headlessly (`AppTest`) against the running
+cluster over gRPC, stopping/starting app and LLM containers for the failure flows.
 
 
 ## 14. Web UI (Streamlit, gRPC client only)
@@ -566,6 +572,7 @@ Ollama with `llama3.2:1b`.
 | overbooking prevention | per-seat ordered locks + Raft-ordered apply + request-ID dedup | `test_booking.py`, `test_raft.py`, `test_raft_m2.py` churn/fault tests | Demo Lab steps 1-2; stress race |
 | mock payment, decline, refund | `payment.py`, `application.raft_post/apply_raft` | `test_payment.py`, `test_m2_features.py::test_payment_decline_creates_no_booking_or_charge`, `test_my_bookings_quote_and_refund` | Booking view |
 | LLM FAQ on a separate server, context aware | `llm_service.py`, `AppServer._faq` (FAQ retrieval + live seat map) | `test_llm.py`, `test_m2_features.py` LLM tests | Booking view FAQ; `verify_docker.py` §7 |
+| web UI (Booking, Cluster Observatory, Demo Lab), gRPC only | `ui/app.py`, `ui/cluster.py` | `test_ui.py` (8 tests incl. headless AppTest) | `scripts/verify_ui_docker.py`; http://127.0.0.1:8501 |
 | stress testing | `scripts/stress_m2.py` | churn + fault-injection tests | [docs/stress-test-report.md](docs/stress-test-report.md) |
 | 4-5 node demo setup | `docker-compose.yml` (LLM, 3 Raft nodes, UI client) | `verify_docker.py` | [docs/docker-verification.md](docs/docker-verification.md) |
 

@@ -1,9 +1,9 @@
 # Milestone 2 completion report
 
 Date: 2026-11-14. Repository: `ADV OS/Project`, branch `main`. Work started from `867e3ee`;
-the code changes were committed by the repository owner during the session as `915a084`
-("Adding docker and UI and some fixes"). **Not in that commit:** `src/requirements-ui.txt`
-(required by the committed `Dockerfile`) and everything under `docs/` (git-ignored).
+the code changes were committed by the repository owner as `915a084`; the submission-readiness
+pass (section 10) added commits `1735012` to `9d27d0a` plus a final docs commit. Everything,
+including `docs/` and `src/ui/`, is committed; nothing has been pushed.
 
 ## 1. Executive summary
 
@@ -13,13 +13,13 @@ Every task in the Milestone 2 brief was implemented and verified by running it: 
 closed (two real defects found by failing tests and fixed), Docker Compose topology verified end
 to end on this machine, Streamlit UI with Booking / Cluster Observatory / Demo Lab built as a
 pure gRPC client, stress test run with a leader kill, LLM boundary hardened, documentation
-written. Final full suite: **76 passed** in two consecutive runs (192 s, 136 s). One pre-existing test in `test_raft.py` is intermittently flaky on the untouched baseline as well (section 4).
+written. Final full suite after the readiness pass: **78 passed** in two consecutive runs
+(207 s, 215 s). A fresh clone builds with `--no-cache` and passes the Docker and UI
+verification scripts (section 10).
 
 Limitations that remain (details in section 7): no log compaction (latency grows with log
 length), static membership, no leader lease, single-machine fault injection, keyword-based
-out-of-domain filter, and two git gaps: `src/requirements-ui.txt` is untracked although the
-committed `Dockerfile` needs it, and `docs/` is listed in `.gitignore`, so none of the reports
-are committed.
+out-of-domain filter.
 
 ## 2. Files changed and why
 
@@ -34,12 +34,12 @@ Modified:
 | `src/ticket_booking/payment.py` | `txn_summary()`, `digest_rows()` | per-booking charge count / refund; state digest |
 | `src/ticket_booking/client.py` | `redirect_map`; retry `NO_LEADER`; `get_my_bookings`, `get_quote`, `ask_faq_detailed` | Docker UI redirects; election windows; UI |
 | `docker-compose.yml` | one image, named volumes, health checks, UI service, no LLM dependency for Raft nodes, Ollama behind a profile, `OLLAMA_URL` override | reproducible topology |
-| `src/Dockerfile` | installs `requirements-ui.txt` in a second step | Streamlit in the shared image |
+| `src/Dockerfile` | installs the single `requirements.txt`; retries the NLTK data download | Streamlit in the shared image; reliable builds |
 | `README.md` | three outdated statements corrected; sections 11-18 added | final documentation |
 
 Added: `src/ticket_booking/healthcheck.py`, `src/ui/app.py`, `src/ui/cluster.py`,
 `src/ui/__init__.py`, `src/scripts/verify_docker.py`, `src/scripts/stress_m2.py`,
-`src/requirements-ui.txt`, `src/.dockerignore`, `src/tests/raft_faults.py`,
+`src/.dockerignore`, `src/tests/raft_faults.py`,
 `src/tests/test_raft_m2.py`, `src/tests/test_m2_features.py`, `src/tests/test_ui.py`,
 `docs/docker-verification.md`, `docs/stress-test-report.md`, `docs/stress-results/*.json`,
 `docs/demo-script.md`, `docs/reflection-template.md`, `docs/submission-checklist.md`, this
@@ -70,7 +70,7 @@ No existing test file was modified (`git diff 867e3ee --stat -- src/tests` lists
 | LLM: gRPC app-to-LLM, correlation IDs, out-of-domain, outage fallback, no state mutation, booking with LLM down | PASSED | `test_m2_features.py` (9 LLM-related cases); Docker §7 |
 | payment decline / refund | PASSED | `test_payment_decline_creates_no_booking_or_charge`, `test_my_bookings_quote_and_refund` |
 | full restart persistence | PASSED | Docker §8 |
-| UI Demo Lab guided failover / no-quorum performed by hand through the browser | NOT RUN | the same helper functions were run by tests and the same scenarios by `verify_docker.py`; the click-through itself is for the demo recording |
+| UI flows end to end against Docker (all three views, failover, no quorum, LLM outage, privacy) | PASSED | `docs/ui-verification.md` (`verify_ui_docker.py`, real `app.py` via AppTest over gRPC) |
 | containerised Ollama (`--profile ollama`) | NOT RUN | verified with host Ollama instead; the profile pulls about 1.3 GB model plus image |
 
 ## 4. Commands and actual results
@@ -150,16 +150,12 @@ Failures seen during the work, and what they were:
 - FAQ out-of-domain detection is keyword based (NLTK stopwords + FAQ keywords); questions that
   share a keyword with the FAQ pass the gate and are answered by the model with the FAQ context.
 - `CLUSTER_STATUS` is node-local and requires a session.
-- Streamlit forces `packaging` 25.0 instead of the 26.3 pin (pytest only; suite passes).
-- Git: `src/requirements-ui.txt` is untracked (a clean clone cannot `docker compose build`
-  until it is committed); `docs/` is git-ignored, so the reports are not in `915a084`.
-- `test_raft.py::test_cluster_election_replication_failure_and_catchup` is flaky (about 15-20%
-  of isolated runs, same on the baseline) because it checks applied state as soon as the
-  commit index matches.
-- During the session the new Python files were rewritten outside this work (module docstrings
-  removed, 15:30:52-15:31:48). One rewrite used a stale copy of `test_raft_m2.py` and reverted
-  the churn-test fix; it was re-applied, re-verified, and is present in `915a084`. No other
-  edit was lost (checked).
+- The containerised Ollama option (`docker compose --profile ollama up -d`) was not exercised;
+  all LLM checks used host Ollama via `OLLAMA_URL`.
+- Legacy (non-Raft, M1) mode: a `--follower` run as a separate process does not share sessions
+  with the leader (pre-existing; Raft mode is the supported multi-node mode).
+- `docker compose build` downloads packages and NLTK data; a network outage fails the build
+  (the NLTK step retries, pip uses its own retries).
 
 ## 8. Viva preparation
 
@@ -179,8 +175,50 @@ Failures seen during the work, and what they were:
 
 ## 9. Submission checklist
 
-See `docs/submission-checklist.md`. Outstanding items for the team: commit
-`src/requirements-ui.txt`, decide about the `docs/` line in `.gitignore` (or add the docs to the
-zip separately), record the video from `docs/demo-script.md`,
+See `docs/submission-checklist.md`. Outstanding items for the team: push when ready, record the video from `docs/demo-script.md`,
 fill in individual reflections from `docs/reflection-template.md`, build the zip without
 `src/.venv`.
+
+
+## 10. Submission-readiness pass (final)
+
+### Changes
+
+| commit | change | why |
+|---|---|---|
+| `1735012` | `src/requirements.txt` rewritten as UTF-8 with `streamlit==1.50.0` added and `packaging` pinned to `25.0` (streamlit 1.50 requires `<26`; pytest 8.4.2 accepts 25.0); `requirements-ui.txt` deleted; Dockerfile installs one file | one requirements file, no workaround |
+| `1735012` | `docs/` removed from `.gitignore`; all reports committed; absolute local paths removed from `milestone2-audit.md` and from the `--json` argument recorded in `stress-results/*.json` (measured values untouched) | deliverables in git, no local paths |
+| `1735012` | `test_raft.py::test_cluster_election_replication_failure_and_catchup`: both wait loops also wait for `last_applied == commit_index`; new assertions `last_applied == 2` and `restarted.last_applied == restarted.commit_index` | flaky test (read seat state before the last committed entry was applied); assertions only added |
+| `97eab82` | Dockerfile retries the NLTK `stopwords` download (5 attempts) | a clean `--no-cache` build failed on one TLS hiccup |
+| `c20b55a` | `verify_docker.py` counts only volumes of the current compose project | false failure when another compose project's volumes exist |
+| `ae8c25c` | UI Booking view keeps the last loaded show list when the show read fails; test `test_booking_view_shows_stale_seat_map_when_quorum_is_lost` | the STALE seat-map state was unreachable without quorum (the show-list read failed first and the view returned) |
+| `9d27d0a` | Demo Lab stores show/seat with the pending no-quorum request ID; test `test_demo_lab_no_quorum_retry_survives_view_switch`; new `scripts/verify_ui_docker.py` | after visiting another view the widgets reset, so the retry sent the same request ID with a different seat and got `REQUEST_CONFLICT` |
+
+### Verification (actual results)
+
+| check | command | result |
+|---|---|---|
+| clean dependency install | new venv, `python -m pip install -r src/requirements.txt`; `pip check` | exit 0; "No broken requirements found." |
+| flaky test | `pytest tests/test_raft.py::test_cluster_election_replication_failure_and_catchup` x15 | 15 passed, 0 failed (before: 3/20 failed on HEAD `867e3ee`, 4/20 with M2 changes) |
+| new UI regression tests | `pytest tests/test_ui.py` | each failed before its fix as described; `8 passed` after |
+| M1 legacy mode (single server :50061, follower :50062, local LLM) | CLI `signup`, `shows`, `seats`, `book` (3 seats), `book` same seat, `status`, `analytics`, `faq`, `cancel` | all as expected (`OK`, `ALREADY_BOOKED`, cancel `OK`, FAQ answered by the LLM) |
+| M1 stress workflow, legacy | `python -m ticket_booking.stress_test_clients --server 127.0.0.1:50061 --race-workers 15 --show-id show-5 --seat-id A9` | race `{'OK': 1, 'ALREADY_BOOKED': 14}` PASS; same request_id PASS |
+| M1 stress workflow, Raft (fresh cluster) | same script, `--server 127.0.0.1:50052 --show-id show-6 --seat-id A30` | race `{'OK': 1, 'ALREADY_BOOKED': 14}` PASS; same request_id PASS |
+| fresh clone build | `git clone`, then `docker compose build --no-cache` | built (after one TLS and one PyPI network failure, see `docker-verification.md`) |
+| fresh clone topology | `python src/scripts/verify_docker.py` | ALL CHECKS PASSED (health, one leader, booking, leader kill, read-after-write, catch-up, no quorum, LLM outage, `down` keeps volumes, full restart) |
+| UI against Docker | `python src/scripts/verify_ui_docker.py` | ALL CHECKS PASSED (`docs/ui-verification.md`) |
+| containerised UI | browser at http://127.0.0.1:8501 | login page rendered |
+| full suite | `cd src; python -m pytest -q -rf` x2 | `78 passed in 207.22s`, `78 passed in 215.25s` |
+
+Milestone 1 regression audit: login/signup/logout/sessions, seat availability, reservation with
+concurrency control, booking/cancellation, mock payment success/decline, FAQ via the separate
+LLM gRPC service, CLI commands and the original stress script all work. The M1 test files
+(`test_auth`, `test_booking`, `test_client`, `test_integration`, `test_llm`, `test_payment`,
+`test_proto`) are unmodified since `867e3ee` and pass. No M1 regression was found. Observed but
+pre-existing and unchanged: in legacy (non-Raft) mode a `--follower` started as a separate
+process has its own in-memory state, so a session created on it is rejected by the leader
+(`AUTH_FAILED`); the in-process legacy follower used by `test_client.py` and the Raft mode do not
+have this problem.
+
+Final readiness: **READY WITH LIMITATIONS**. The limitations are the design limits in section 7
+and the containerised-Ollama profile not being exercised; no known defect is open.
