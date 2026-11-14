@@ -242,7 +242,11 @@ def main():
     out("## 8. Full restart persistence (`down` keeps named volumes)")
     before = snapshot(token)
     compose("down", timeout=240)
-    vols = subprocess.run(["docker", "volume", "ls", "--format", "{{.Name}}"], capture_output=True, text=True).stdout.split()
+    project = json.loads(subprocess.run(["docker", "compose", "config", "--format", "json"], capture_output=True, text=True).stdout)["name"]
+    vols = subprocess.run(
+        ["docker", "volume", "ls", "--filter", f"label=com.docker.compose.project={project}", "--format", "{{.Name}}"],
+        capture_output=True, text=True,
+    ).stdout.split()
     kept = [v for v in vols if v.endswith(("node-1-data", "node-2-data", "node-3-data"))]
     check("named Raft volumes survive `docker compose down`", len(kept) == 3, str(kept))
     compose("up", "-d", timeout=240)
