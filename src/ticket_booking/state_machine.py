@@ -274,6 +274,34 @@ class SeatMap:
                 held[i].release()
                 i = i - 1
 
+    def user_bookings(self, user_id):
+        with self.lock:
+            out = []
+            for b in self.bookings.values():
+                if b.user_id == user_id:
+                    out.append(
+                        {
+                            "booking_id": b.booking_id,
+                            "show_id": b.show_id,
+                            "seat_id": b.seat_id,
+                            "status": b.status,
+                            "txn": b.txn,
+                        }
+                    )
+            return out
+
+    def digest_rows(self):
+        with self.lock:
+            rows = []
+            for show in sorted(self.grid):
+                for sid in sorted(self.grid[show]):
+                    s = self.grid[show][sid]
+                    rows.append(("seat", show, sid, s.status, s.owner or "", s.booking or ""))
+            for bid in sorted(self.bookings):
+                b = self.bookings[bid]
+                rows.append(("booking", bid, b.user_id, b.show_id, b.seat_id, b.status, b.txn))
+            return rows
+
     def result(self, req_id, user_id=None, kind=None, payload=None):
         self.lock.acquire()
         try:

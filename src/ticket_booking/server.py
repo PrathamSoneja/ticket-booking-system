@@ -1,12 +1,14 @@
 import argparse
 import json
 import logging
+import os
 import sys
 from concurrent import futures
 from datetime import UTC, datetime
 from pathlib import Path
 from secrets import token_urlsafe
 from threading import Lock
+from uuid import uuid4
 
 import grpc
 
@@ -17,10 +19,22 @@ if str(GEN) not in sys.path:
 import ticket_booking_pb2 as pb
 import ticket_booking_pb2_grpc as pb_grpc
 from ticket_booking.application import BookingApp
+from ticket_booking.faq_data import FaqIndex
 from ticket_booking.raft_node import RaftNode
 from ticket_booking.raft_service import RaftService
 
 log = logging.getLogger("ticket_booking")
+
+FORWARDED_HEADER = "x-tb-forwarded"
+
+
+def _is_forwarded(ctx):
+    if ctx is None:
+        return False
+    for key, _ in ctx.invocation_metadata() or ():
+        if key == FORWARDED_HEADER:
+            return True
+    return False
 
 
 class AppServer(pb_grpc.ClientServiceServicer):
@@ -34,6 +48,9 @@ class AppServer(pb_grpc.ClientServiceServicer):
         self.is_leader = is_leader
         self.raft = raft
         self.leader_url = leader_url
+        self.read_timeout = 2.0
+        self.llm_timeout = float(os.environ.get("TB_LLM_TIMEOUT", "60"))
+        self.faq = FaqIndex()
         self.signup_lock = Lock()
         if llm_url:
             self.llm_ch = grpc.insecure_channel(llm_url)
@@ -133,6 +150,21 @@ class AppServer(pb_grpc.ClientServiceServicer):
         params = {}
         for k in data:
             params[str(k)] = str(data[k])
+        if self.raft and req.type != "CLUSTER_STATUS":
+            # Authoritative reads: followers forward to the leader; the leader serves only after
+            # a ReadIndex barrier confirms it still holds a majority for its term.
+            if self.raft.role != "leader":
+                if _is_forwarded(ctx):
+                    return pb.GetResponse(status="NO_LEADER", message="Forwarded read reached a non-leader.")
+                wait = self.llm_timeout + 5.0 if req.type == "FAQ" else 3.0
+                return self._forward_auth("Get", req, wait)
+            barrier = self.raft.read_barrier(self.read_timeout)
+            if barrier != "OK":
+                if barrier == "NOT_LEADER":
+                    barrier = "NO_LEADER"
+                return pb.GetResponse(
+                    status=barrier, message="Read could not be confirmed by a Raft majority."
+                )
         if req.type == "CLUSTER_STATUS":
             if self.app.auth.token_user(req.token) is None:
                 return pb.GetResponse(
@@ -140,6 +172,8 @@ class AppServer(pb_grpc.ClientServiceServicer):
                 )
             if self.raft:
                 status = self.raft.status()
+                status["log_digest"] = self.raft.log_digest(status["commit_index"])
+                status["state_digest"] = self.app.state_digest()
             else:
                 status = {
                     "node_id": "single-node",
@@ -155,23 +189,11 @@ class AppServer(pb_grpc.ClientServiceServicer):
         if status != "OK":
             return pb.GetResponse(status=status, message=msg)
         if req.type == "FAQ":
-            q = params.get("query", "").strip()
-            if not q:
-                return pb.GetResponse(status="INVALID_REQUEST", message="FAQ requests require a query parameter.")
-            if self.llm is None:
-                return pb.GetResponse(status="LLM_UNAVAILABLE", message="The FAQ service is not configured.")
-            try:
-                ctx_str = self.app.faq_context(q, params)
-                ans = self.llm.GetLLMAnswer(
-                    pb.LLMRequest(request_id=req.token, query=q, context=ctx_str), timeout=60
-                ).answer
-            except grpc.RpcError as err:
-                log.warning("LLM RPC failed: %s", err)
-                return pb.GetResponse(status="LLM_UNAVAILABLE", message="The FAQ service could not be reached.")
-            return pb.GetResponse(status="OK", message=ans)
+            return self._faq(params)
         proto_items = []
         for it in items:
-            proto_items.append(pb.Item(id=it.get("show_id") or it.get("seat_id") or "", data=json.dumps(it).encode()))
+            key = it.get("booking_id") or it.get("show_id") or it.get("seat_id") or ""
+            proto_items.append(pb.Item(id=key, data=json.dumps(it).encode()))
         return pb.GetResponse(status=status, items=proto_items, message=msg)
 
     def Post(self, req, ctx):
@@ -212,12 +234,76 @@ class AppServer(pb_grpc.ClientServiceServicer):
                 clean[str(k)] = str(v)
         if self.raft:
             out = self.app.raft_post(req.token, req.type, clean, req.request_id, self.raft)
+            if out.status == "NOT_LEADER":
+                # leadership changed while proposing; point the client at the new leader if known
+                return pb.StatusResponse(
+                    status="NOT_LEADER",
+                    message=out.message,
+                    redirect_to=self.raft.leader_address or "",
+                )
         else:
             out = self.app.post(req.token, req.type, clean, req.request_id)
         return pb.StatusResponse(status=out.status, message=out.message, booking_id=out.booking_id)
 
-    def _forward_auth(self, method, req):
-        response = pb.StatusResponse if method == "Logout" else pb.LoginResponse
+    def _faq(self, params):
+        """FAQ boundary. The LLM only ever produces text for this read-only reply: nothing it
+        returns is parsed or applied to booking, payment or auth state."""
+        q = params.get("query", "").strip()
+        if not q:
+            return pb.GetResponse(status="INVALID_REQUEST", message="FAQ requests require a query parameter.")
+        cid = "faq-" + uuid4().hex  # correlation ID; never the session token
+        faq_txt, faq_ids = self.faq.retrieve(q)
+        live = self.app.faq_context(q, {k: v for k, v in params.items() if k != "context"})
+        support = {
+            "correlation_id": cid,
+            "sources": faq_ids,
+            "faq_context": faq_txt,
+            "live_context": live,
+            "generated": False,
+            "fallback": False,
+        }
+
+        def reply(status, message):
+            item = pb.Item(id="faq_support", data=json.dumps(support).encode())
+            return pb.GetResponse(status=status, message=message, items=[item])
+
+        if not faq_ids and not live:
+            return reply(
+                "OUT_OF_DOMAIN",
+                "I can only answer questions about shows, seats, bookings, payments, "
+                "cancellations and refunds.",
+            )
+        ans = None
+        if self.llm is not None:
+            try:
+                ctx_str = self.app.faq_context(q, params)
+                ans = self.llm.GetLLMAnswer(
+                    pb.LLMRequest(request_id=cid, query=q, context=ctx_str), timeout=self.llm_timeout
+                ).answer
+            except grpc.RpcError as err:
+                log.warning("LLM RPC failed (correlation_id=%s): %s", cid, err.code())
+        if ans:
+            support["generated"] = True
+            return reply("OK", ans)
+        support["fallback"] = True
+        base = (
+            "The FAQ service is not configured."
+            if self.llm is None
+            else "The FAQ service could not be reached."
+        )
+        text = faq_txt or live
+        return reply(
+            "LLM_UNAVAILABLE",
+            base + " Fallback - matching FAQ text shown verbatim, not AI-generated: " + text,
+        )
+
+    def _forward_auth(self, method, req, timeout=3.0):
+        if method == "Logout":
+            response = pb.StatusResponse
+        elif method == "Get":
+            response = pb.GetResponse
+        else:
+            response = pb.LoginResponse
         leader = self.raft.leader_rpc_address or ""
         if not leader:
             self.raft.wait_for_leader(1.0)
@@ -228,7 +314,7 @@ class AppServer(pb_grpc.ClientServiceServicer):
         stub = pb_grpc.ClientServiceStub(ch)
         try:
             call = getattr(stub, method)
-            res = call(req, timeout=3.0)
+            res = call(req, timeout=timeout, metadata=((FORWARDED_HEADER, "1"),))
         except grpc.RpcError as err:
             log.warning("Could not forward %s to cluster leader: %s", method, err)
             return response(status="NO_LEADER", message="The cluster leader is unavailable.")

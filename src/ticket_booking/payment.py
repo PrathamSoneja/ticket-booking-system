@@ -54,6 +54,31 @@ class Payments:
         self.lock.release()
         return cnt
 
+    def txn_summary(self, txn):
+        with self.lock:
+            charges = 0
+            amount = 0.0
+            for v in self.charges.values():
+                if v.status == "SUCCESS" and v.txn == txn:
+                    charges = charges + 1
+                    amount = v.amount
+            ref = self.refunds.get(txn)
+            return {
+                "charges": charges,
+                "amount": amount,
+                "refunded": ref is not None and ref.status == "SUCCESS",
+            }
+
+    def digest_rows(self):
+        with self.lock:
+            rows = []
+            for rid in sorted(self.charges):
+                v = self.charges[rid]
+                rows.append(("charge", rid, v.status, v.txn, f"{v.amount:.2f}"))
+            for txn in sorted(self.refunds):
+                rows.append(("refund", txn, self.refunds[txn].status))
+            return rows
+
     def charge(self, user, amount=None, card="4242424242424242", req_id=None):
         self.lock.acquire()
         try:

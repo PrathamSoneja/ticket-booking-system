@@ -1,4 +1,5 @@
 import json
+from hashlib import sha256
 from uuid import NAMESPACE_URL, uuid5
 
 from .auth import Auth
@@ -51,7 +52,41 @@ class BookingApp:
             return "OK", self.seats.analytics(), ""
         if kind == "FAQ":
             return "OK", [], ""
+        if kind == "MY_BOOKINGS":
+            rows = self.seats.user_bookings(user)
+            for row in rows:
+                row.update(self.pay.txn_summary(row["txn"]) if row["txn"] else {"charges": 0, "amount": 0.0, "refunded": False})
+            return "OK", rows, ""
+        if kind == "QUOTE":
+            show_id = params.get("show_id", "")
+            if show_id not in self.seats.catalog:
+                return "NOT_FOUND", [], "Show does not exist."
+            picked = []
+            for part in str(params.get("seat_id", "")).replace(";", ",").split(","):
+                bit = part.strip()
+                if bit != "" and bit not in picked:
+                    picked.append(bit)
+            if not picked or len(picked) > 5:
+                return "INVALID_REQUEST", [], "Select between 1 and 5 seats."
+            return (
+                "OK",
+                [
+                    {
+                        "show_id": show_id,
+                        "seat_ids": picked,
+                        "unit_price": self.pay.price,
+                        "total": self.pay.price * len(picked),
+                    }
+                ],
+                "",
+            )
         return "INVALID_REQUEST", [], "Unsupported get request type."
+
+    def state_digest(self):
+        h = sha256()
+        for row in self.seats.digest_rows() + self.pay.digest_rows():
+            h.update(repr(row).encode())
+        return h.hexdigest()[:16]
 
     def faq_context(self, query, params=None):
         if params == None:
@@ -200,6 +235,8 @@ class BookingApp:
         return out
 
     def apply_raft(self, kind, payload, req_id):
+        if kind == "NOOP":
+            return Outcome("OK", "No-op committed for read barrier.")
         body = json.loads(payload.decode())
         if kind == "AUTH_SESSION":
             self.auth.add_session_hash(body["token_hash"], body["user_id"], body["expiry"])

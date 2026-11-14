@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import random
 import time
@@ -97,7 +98,18 @@ class RaftNode:
                 "log_length": self.store.last_index,
                 "commit_index": self.commit_index,
                 "last_applied": self.last_applied,
+                "last_log_term": self.store.term_at(self.store.last_index) or 0,
+                "match_index": dict(self.match_index) if self.role == "leader" else {},
             }
+
+    def log_digest(self, upto=None):
+        """Short hash of the committed log prefix [1..upto] (default: commit_index)."""
+        with self.cv:
+            upto = self.commit_index if upto is None else upto
+        h = hashlib.sha256()
+        for row in self.store.entries_to(upto):
+            h.update(repr((row[0], row[1], row[2], bytes(row[3]), row[4])).encode())
+        return h.hexdigest()[:16]
 
     def start(self):
         with self.cv:
@@ -232,9 +244,9 @@ class RaftNode:
                         ent.index, ent.term, ent.command_type, ent.payload, ent.request_id
                     )
                 expect = expect + 1
-            last_idx = self.store.last_index
+            last_new = req.prev_index + len(req.entries)
             if req.commit_index > self.commit_index:
-                self.commit_index = min(req.commit_index, last_idx)
+                self.commit_index = max(self.commit_index, min(req.commit_index, last_new))
                 self.store.set_commit(self.commit_index)
         self._apply_committed()
         return pb.AppendEntriesReply(
@@ -283,6 +295,52 @@ class RaftNode:
             if req_id in self.results and self.last_applied >= idx:
                 return "OK", self.results[req_id]
             return "NO_QUORUM", None
+
+    def read_barrier(self, timeout=2.0):
+        """ReadIndex-style linearizable read barrier (Raft paper section 8).
+
+        Returns "OK" only when (1) this node is leader and has committed an entry from its
+        current term, (2) a majority (counting itself) acknowledged its leadership for that term
+        in a heartbeat round started *after* the read index was recorded, and (3) the state
+        machine has applied at least up to that read index. Otherwise returns "NOT_LEADER" or
+        "NO_QUORUM"; the caller must not serve the read.
+        """
+        end = time.monotonic() + timeout
+        with self.cv:
+            if self.role != "leader":
+                return "NOT_LEADER"
+            term = self.term
+            need_noop = self.store.term_at(self.commit_index) != term
+        if need_noop:
+            status, _ = self.propose(
+                "NOOP", b"{}", f"noop:{self.node_id}:{term}", timeout=max(0.05, end - time.monotonic())
+            )
+            if status != "OK":
+                return status
+        with self.cv:
+            if self.role != "leader" or self.term != term:
+                return "NOT_LEADER"
+            read_index = self.commit_index
+        while True:
+            acks = 1
+            if self.peers:
+                jobs = [self.pool.submit(self._replicate_peer, peer) for peer in self.peers]
+                for job in jobs:
+                    try:
+                        if job.result(timeout=max(0.05, end - time.monotonic())):
+                            acks = acks + 1
+                    except TimeoutError:
+                        continue
+            with self.cv:
+                if self.role != "leader" or self.term != term:
+                    return "NOT_LEADER"
+                if acks >= self.majority:
+                    while self.last_applied < read_index and time.monotonic() < end:
+                        self.cv.wait(min(0.05, max(0.001, end - time.monotonic())))
+                    return "OK" if self.last_applied >= read_index else "NO_QUORUM"
+            if time.monotonic() >= end:
+                return "NO_QUORUM"
+            time.sleep(0.02)
 
     def _set_term(self, term, vote):
         self.term = term
@@ -394,14 +452,14 @@ class RaftNode:
         with self.peer_locks[peer]:
             with self.cv:
                 if self.role != "leader":
-                    return
+                    return False
                 next_idx = self.next_index.get(peer, self.store.last_index + 1)
                 next_idx = max(1, next_idx)
                 prev_idx = next_idx - 1
                 prev_term = self.store.term_at(prev_idx)
                 if prev_term is None:
                     self.next_index[peer] = max(1, next_idx - 1)
-                    return
+                    return False
                 rows = self.store.entries_from(next_idx)
                 ents = []
                 for idx, term, cmd, payload, req_id in rows:
@@ -429,13 +487,13 @@ class RaftNode:
             try:
                 res = self.stubs[peer].AppendEntries(req, timeout=0.3)
             except grpc.RpcError:
-                return
+                return False
             with self.cv:
                 if res.term > self.term:
                     self._set_term(res.term, None)
-                    return
+                    return False
                 if self.role != "leader" or self.term != cur_term:
-                    return
+                    return False
                 if res.entry_appended:
                     self.match_index[peer] = max(self.match_index.get(peer, 0), res.match_index)
                     self.next_index[peer] = self.match_index[peer] + 1
@@ -443,6 +501,8 @@ class RaftNode:
                     self.next_index[peer] = max(
                         1, min(self.next_index.get(peer, 1) - 1, res.match_index + 1)
                     )
+                # a same-term reply (success or log mismatch) proves the peer accepts us as leader
+                return res.term == cur_term
 
     def _advance_commit(self):
         with self.cv:

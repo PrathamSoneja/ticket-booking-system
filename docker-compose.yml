@@ -1,22 +1,50 @@
-services:
-  ollama:
-    image: ollama/ollama:latest
-    volumes:
-      - ollama-data:/root/.ollama
+# Local Milestone 2 topology: 1 LLM node, 3 Raft application nodes, 1 UI/client node.
+# All five services run the same image (ticket-booking:m2) with different commands.
+#
+#   docker compose up -d --build        build + start (named volumes are kept)
+#   docker compose down                 stop + remove containers, KEEP Raft volumes
+#   docker compose down -v              DESTRUCTIVE: also deletes all Raft logs/state
+#
+# LLM model runtime (Ollama) options -- see README section "Docker":
+#   * host Ollama:       OLLAMA_URL=http://host.docker.internal:11434/api/generate docker compose up -d
+#   * containerised:     docker compose --profile ollama up -d   (pulls the model on first start)
+#   * neither:           FAQ answers fall back to verbatim FAQ text, labelled as not AI-generated.
 
+x-image: &image
+  image: ticket-booking:m2
+  build:
+    context: ./src
+  restart: unless-stopped
+
+x-raft-node: &raft-node
+  <<: *image
+  environment:
+    TB_LLM_TIMEOUT: "30"
+  healthcheck:
+    test: ["CMD", "python", "-m", "ticket_booking.healthcheck", "raft", "127.0.0.1:50051"]
+    interval: 5s
+    timeout: 4s
+    retries: 5
+    start_period: 10s
+
+services:
   llm:
-    build:
-      context: ./src
+    <<: *image
     command: ["python", "-m", "ticket_booking.llm_service"]
     environment:
-      OLLAMA_URL: http://ollama:11434/api/generate
-      OLLAMA_MODEL: llama3.2:1b
-    depends_on:
-      - ollama
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434/api/generate}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:1b}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-m", "ticket_booking.healthcheck", "llm", "127.0.0.1:50055"]
+      interval: 5s
+      timeout: 4s
+      retries: 5
+      start_period: 10s
 
   app-1:
-    build:
-      context: ./src
+    <<: *raft-node
     command:
       - python
       - -m
@@ -34,13 +62,10 @@ services:
     ports:
       - "127.0.0.1:50051:50051"
     volumes:
-      - ./.data/node-1:/app/data/node-1
-    depends_on:
-      - llm
+      - node-1-data:/app/data/node-1
 
   app-2:
-    build:
-      context: ./src
+    <<: *raft-node
     command:
       - python
       - -m
@@ -58,13 +83,10 @@ services:
     ports:
       - "127.0.0.1:50052:50051"
     volumes:
-      - ./.data/node-2:/app/data/node-2
-    depends_on:
-      - llm
+      - node-2-data:/app/data/node-2
 
   app-3:
-    build:
-      context: ./src
+    <<: *raft-node
     command:
       - python
       - -m
@@ -82,9 +104,57 @@ services:
     ports:
       - "127.0.0.1:50053:50051"
     volumes:
-      - ./.data/node-3:/app/data/node-3
+      - node-3-data:/app/data/node-3
+
+  ui:
+    <<: *image
+    command:
+      - python
+      - -m
+      - streamlit
+      - run
+      - ui/app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+      - --server.headless=true
+      - --browser.gatherUsageStats=false
+    environment:
+      # gRPC addresses of the Raft nodes as seen from inside the compose network
+      TB_NODES: node-1=app-1:50051,node-2=app-2:50051,node-3=app-3:50051
+      # leaders advertise host-facing addresses; translate them for this container
+      TB_REDIRECT_MAP: 127.0.0.1:50051=app-1:50051,127.0.0.1:50052=app-2:50051,127.0.0.1:50053=app-3:50051
+      TB_COMPOSE_SERVICES: node-1=app-1,node-2=app-2,node-3=app-3
+    ports:
+      - "127.0.0.1:8501:8501"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     depends_on:
-      - llm
+      - app-1
+      - app-2
+      - app-3
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    volumes:
+      - ollama-data:/root/.ollama
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["ollama", "pull", "${OLLAMA_MODEL:-llama3.2:1b}"]
+    depends_on:
+      - ollama
+    restart: "no"
 
 volumes:
+  node-1-data:
+  node-2-data:
+  node-3-data:
   ollama-data:

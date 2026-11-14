@@ -1,0 +1,8 @@
+.venv
+**/__pycache__
+**/*.pyc
+.pytest_cache
+ticket_booking/catalog.db
+ticket_booking/catalog.db-wal
+ticket_booking/catalog.db-shm
+data
