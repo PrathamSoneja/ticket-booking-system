@@ -194,6 +194,198 @@ def test_raft_storage_replays_committed_entries(tmp_path):
     restarted.close()
 
 
+def test_single_leader_election_stays_stable_under_repeated_failover(tmp_path):
+    ids = ["node-1", "node-2", "node-3"]
+    addrs = {node: f"127.0.0.1:{free_port()}" for node in ids}
+    nodes = {}
+    for node in ids:
+        peers = {other: addr for other, addr in addrs.items() if other != node}
+        nodes[node] = LocalNode(
+            node,
+            addrs[node],
+            peers,
+            tmp_path / node / "raft.db",
+            start=False,
+        )
+    for node in nodes.values():
+        node.raft.start()
+    for _ in range(4):
+        leader = wait_leader(nodes)
+        assert leader is not None
+        assert sum(1 for node in nodes.values() if node.raft.role == "leader") == 1
+        dead = leader
+        nodes[dead].stop()
+        assert wait_leader({key: val for key, val in nodes.items() if key != dead}) is not None
+        for key, node in list(nodes.items()):
+            if key == dead:
+                continue
+            node.raft.start()
+        nodes[dead] = LocalNode(
+            dead,
+            addrs[dead],
+            {other: addr for other, addr in addrs.items() if other != dead},
+            tmp_path / dead / "raft.db",
+            start=True,
+        )
+    for node in list(nodes.values()):
+        node.stop()
+
+
+def test_append_entries_rejects_stale_leader_after_term_bump(tmp_path):
+    apply = lambda cmd, payload, req_id: Outcome("OK", payload.decode())
+    node = RaftNode("n1", {"n2": "127.0.0.1:1"}, tmp_path / "stale.db", apply)
+    node.term = 4
+    node.voted_for = "n1"
+    node.role = "leader"
+    stale = pb.AppendEntriesArgs(
+        **{
+            "from": "n2",
+            "term": 3,
+            "prev_index": 0,
+            "prev_term": 0,
+            "commit_index": 0,
+            "entries": [pb.LogEntry(index=1, term=3, command_type="TEST", payload=b"old", request_id="r1")],
+        }
+    )
+    assert not node.append_entries(stale).entry_appended
+    assert node.term == 4
+    node.close()
+
+
+def test_propose_requires_quorum_before_commit(tmp_path):
+    ids = ["node-1", "node-2", "node-3"]
+    addrs = {node: f"127.0.0.1:{free_port()}" for node in ids}
+    nodes = {}
+    for node in ids:
+        peers = {other: addr for other, addr in addrs.items() if other != node}
+        nodes[node] = LocalNode(
+            node,
+            addrs[node],
+            peers,
+            tmp_path / node / "raft.db",
+            start=False,
+        )
+    for node in nodes.values():
+        node.raft.start()
+    leader = wait_leader(nodes)
+    assert leader is not None
+    for node_id in list(nodes):
+        if node_id != leader:
+            nodes[node_id].stop()
+    status, out = nodes[leader].raft.propose("TEST", b"blocked", "quorum-1", timeout=0.6)
+    assert status == "NO_QUORUM"
+    assert out is None
+    for node in list(nodes.values()):
+        node.stop()
+
+
+def test_client_seed_failover_handles_leader_stop(tmp_path):
+    ids = ["node-1", "node-2", "node-3"]
+    addrs = {node: f"127.0.0.1:{free_port()}" for node in ids}
+    nodes = {}
+    for node in ids:
+        peers = {other: addr for other, addr in addrs.items() if other != node}
+        nodes[node] = LocalNode(
+            node,
+            addrs[node],
+            peers,
+            tmp_path / node / "raft.db",
+            start=False,
+        )
+    for node in nodes.values():
+        node.raft.start()
+    leader = wait_leader(nodes)
+    assert leader is not None
+    client = Client(list(addrs.values()))
+    assert client.login("alice", "wonderland")[0]
+    status, booking_id, message = client.book_seat("show-1", "A1")
+    assert status == "OK"
+    assert booking_id
+    nodes[leader].stop()
+    next_leader = wait_leader({node_id: node for node_id, node in nodes.items() if node_id != leader})
+    assert next_leader is not None
+    status, booking_id_2, message_2 = client.book_seat("show-1", "A2")
+    assert status == "OK", (status, message_2)
+    assert booking_id_2
+    for node in list(nodes.values()):
+        node.stop()
+    client.close()
+
+
+def test_follower_rejoin_catches_up_committed_log(tmp_path):
+    ids = ["node-1", "node-2", "node-3"]
+    addrs = {node: f"127.0.0.1:{free_port()}" for node in ids}
+    nodes = {}
+    for node in ids:
+        peers = {other: addr for other, addr in addrs.items() if other != node}
+        nodes[node] = LocalNode(
+            node,
+            addrs[node],
+            peers,
+            tmp_path / node / "raft.db",
+            start=False,
+        )
+    for node in nodes.values():
+        node.raft.start()
+    leader = wait_leader(nodes)
+    assert leader is not None
+    client = Client(list(addrs.values()))
+    assert client.login("alice", "wonderland")[0]
+    status, booking_id, _ = client.book_seat("show-1", "A3")
+    assert status == "OK"
+    follower = next(node_id for node_id in ids if node_id != leader)
+    nodes[follower].stop()
+    for node in list(nodes.values()):
+        if node.node_id == follower:
+            continue
+        node.raft.start()
+    restarted = LocalNode(
+        follower,
+        addrs[follower],
+        {other: addr for other, addr in addrs.items() if other != follower},
+        tmp_path / follower / "raft.db",
+        start=True,
+    )
+    end = time.monotonic() + 4
+    while time.monotonic() < end:
+        if restarted.raft.commit_index >= 2:
+            break
+        time.sleep(0.05)
+    assert restarted.raft.commit_index >= 2
+    assert restarted.app.seats.grid["show-1"]["A3"].status == "BOOKED"
+    for node in list(nodes.values()):
+        node.stop()
+    restarted.stop()
+    client.close()
+
+
+def test_cluster_commits_same_log_after_write_burst_and_leader_change(cluster):
+    leader = wait_leader(cluster)
+    assert leader is not None
+    follower_ids = [node_id for node_id in cluster if node_id != leader]
+    client = Client([cluster[node_id].addr for node_id in cluster])
+    assert client.login("alice", "wonderland")[0]
+    ids = []
+    for seat in ["A4", "A5", "A6"]:
+        status, bid, _ = client.book_seat("show-1", seat)
+        assert status == "OK", (status, bid)
+        ids.append(bid)
+    for node_id in cluster:
+        log = [row[0:5] for row in cluster[node_id].raft.store.entries_to(cluster[node_id].raft.commit_index)]
+        assert log, node_id
+    assert len({tuple(cluster[node_id].raft.store.entries_to(cluster[node_id].raft.commit_index)) for node_id in cluster}) == 1
+    client.close()
+
+
+def test_append_entries_heartbeats_and_delayed_rpc_do_not_break_election(cluster):
+    leader = wait_leader(cluster)
+    assert leader is not None
+    follower = next(node_id for node_id in cluster if node_id != leader)
+    cluster[follower].raft.deadline = time.monotonic() + 0.1
+    time.sleep(0.3)
+    assert sum(1 for node in cluster.values() if node.raft.role == "leader") == 1
+
+
 def test_leader_advertises_client_address_separate_from_peer_address(tmp_path):
     node = RaftNode(
         "n1",
