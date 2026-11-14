@@ -19,13 +19,25 @@ if str(GEN) not in sys.path:
 import ticket_booking_pb2 as pb
 import ticket_booking_pb2_grpc as pb_grpc
 from ticket_booking.application import BookingApp
-from ticket_booking.faq_data import FaqIndex
+from ticket_booking.faq_data import FaqIndex, in_domain
 from ticket_booking.raft_node import RaftNode
 from ticket_booking.raft_service import RaftService
 
 log = logging.getLogger("ticket_booking")
 
 FORWARDED_HEADER = "x-tb-forwarded"
+
+
+def _json_object(raw):
+    if not raw:
+        return {}, ""
+    try:
+        data = json.loads(raw.decode())
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None, "Request payload is not valid JSON."
+    if not isinstance(data, dict):
+        return None, "Request payload must be a JSON object."
+    return data, ""
 
 
 def _is_forwarded(ctx):
@@ -66,7 +78,7 @@ class AppServer(pb_grpc.ClientServiceServicer):
     def Login(self, req, ctx):
         if self.raft:
             if self.raft.role != "leader":
-                return self._forward_auth("Login", req)
+                return self._forward("Login", req)
             if not self.app.auth.check_credentials(req.username, req.password):
                 return pb.LoginResponse(status="AUTH_FAILED", message="Invalid username or password.")
             tok = token_urlsafe(32)
@@ -86,7 +98,7 @@ class AppServer(pb_grpc.ClientServiceServicer):
     def Signup(self, req, ctx):
         if self.raft:
             if self.raft.role != "leader":
-                return self._forward_auth("Signup", req)
+                return self._forward("Signup", req)
             with self.signup_lock:
                 status, name, digest, msg = self.app.auth.prepare_signup(req.username, req.password)
                 if status != "OK":
@@ -115,7 +127,7 @@ class AppServer(pb_grpc.ClientServiceServicer):
     def Logout(self, req, ctx):
         if self.raft:
             if self.raft.role != "leader":
-                return self._forward_auth("Logout", req)
+                return self._forward("Logout", req)
             if self.app.auth.token_user(req.token) is None:
                 return pb.StatusResponse(status="AUTH_FAILED", message="Invalid or expired session.")
             key = self.app.auth.token_key(req.token)
@@ -130,34 +142,18 @@ class AppServer(pb_grpc.ClientServiceServicer):
         return pb.StatusResponse(status=out.status, message=out.message)
 
     def Get(self, req, ctx):
-        raw = req.params
-        if not raw:
-            data = {}
-            err = ""
-        else:
-            try:
-                data = json.loads(raw.decode())
-                if not isinstance(data, dict):
-                    data = None
-                    err = "Request payload must be a JSON object."
-                else:
-                    err = ""
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                data = None
-                err = "Request payload is not valid JSON."
+        data, err = _json_object(req.params)
         if err:
             return pb.GetResponse(status="INVALID_REQUEST", message=err)
         params = {}
         for k in data:
             params[str(k)] = str(data[k])
         if self.raft and req.type != "CLUSTER_STATUS":
-            # Authoritative reads: followers forward to the leader; the leader serves only after
-            # a ReadIndex barrier confirms it still holds a majority for its term.
             if self.raft.role != "leader":
                 if _is_forwarded(ctx):
                     return pb.GetResponse(status="NO_LEADER", message="Forwarded read reached a non-leader.")
                 wait = self.llm_timeout + 5.0 if req.type == "FAQ" else 3.0
-                return self._forward_auth("Get", req, wait)
+                return self._forward("Get", req, wait)
             barrier = self.raft.read_barrier(self.read_timeout)
             if barrier != "OK":
                 if barrier == "NOT_LEADER":
@@ -208,21 +204,7 @@ class AppServer(pb_grpc.ClientServiceServicer):
             return pb.StatusResponse(
                 status="NOT_LEADER", message="Redirect to current cluster leader.", redirect_to=self.leader_url
             )
-        raw = req.data
-        if not raw:
-            data = {}
-            err = ""
-        else:
-            try:
-                data = json.loads(raw.decode())
-                if not isinstance(data, dict):
-                    data = None
-                    err = "Request payload must be a JSON object."
-                else:
-                    err = ""
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                data = None
-                err = "Request payload is not valid JSON."
+        data, err = _json_object(req.data)
         if err:
             return pb.StatusResponse(status="INVALID_REQUEST", message=err)
         clean = {}
@@ -235,7 +217,6 @@ class AppServer(pb_grpc.ClientServiceServicer):
         if self.raft:
             out = self.app.raft_post(req.token, req.type, clean, req.request_id, self.raft)
             if out.status == "NOT_LEADER":
-                # leadership changed while proposing; point the client at the new leader if known
                 return pb.StatusResponse(
                     status="NOT_LEADER",
                     message=out.message,
@@ -267,7 +248,7 @@ class AppServer(pb_grpc.ClientServiceServicer):
             item = pb.Item(id="faq_support", data=json.dumps(support).encode())
             return pb.GetResponse(status=status, message=message, items=[item])
 
-        if not faq_ids and not live:
+        if not in_domain(q) or (not faq_ids and not live):
             return reply(
                 "OUT_OF_DOMAIN",
                 "I can only answer questions about shows, seats, bookings, payments, "
@@ -297,7 +278,7 @@ class AppServer(pb_grpc.ClientServiceServicer):
             base + " Fallback - matching FAQ text shown verbatim, not AI-generated: " + text,
         )
 
-    def _forward_auth(self, method, req, timeout=3.0):
+    def _forward(self, method, req, timeout=3.0):
         if method == "Logout":
             response = pb.StatusResponse
         elif method == "Get":

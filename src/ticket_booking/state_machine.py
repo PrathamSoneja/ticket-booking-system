@@ -6,6 +6,15 @@ from uuid import NAMESPACE_URL, uuid5
 from .seed import loaded_shows
 
 
+def parse_seats(raw):
+    picked = []
+    for part in str(raw).replace(";", ",").split(","):
+        bit = part.strip()
+        if bit and bit not in picked:
+            picked.append(bit)
+    return picked
+
+
 @dataclass(frozen=True)
 class Outcome:
     status: str
@@ -138,22 +147,19 @@ class SeatMap:
             self.lock.release()
 
     def book(self, user_id, show_id, seat_id, req_id, pay=None, txn="", *, kind="BOOK_SEAT", payload=None):
+        meta = payload or {"show_id": show_id, "seat_id": seat_id}
         with self.lock:
-            already = self._lookup(req_id, user_id=user_id, kind=kind, payload=payload or {"show_id": show_id, "seat_id": seat_id})
+            already = self._lookup(req_id, user_id=user_id, kind=kind, payload=meta)
             if already is not None:
                 return already
-        picked = []
-        for part in str(seat_id).replace(";", ",").split(","):
-            bit = part.strip()
-            if bit != "" and bit not in picked:
-                picked.append(bit)
+        picked = parse_seats(seat_id)
         if len(picked) > 5:
             out = Outcome("INVALID_REQUEST", "You can book at most 5 seats in one session.")
-            self._record(req_id, out, user_id=user_id, kind=kind, payload={"show_id": show_id, "seat_id": seat_id})
+            self._record(req_id, out, user_id=user_id, kind=kind, payload=meta)
             return out
         if not picked:
             out = Outcome("NOT_FOUND", "Show or seat does not exist.")
-            self._record(req_id, out, user_id=user_id, kind=kind, payload={"show_id": show_id, "seat_id": seat_id})
+            self._record(req_id, out, user_id=user_id, kind=kind, payload=meta)
             return out
         show_seats = self.grid.get(show_id, {})
         keys = []
@@ -173,7 +179,7 @@ class SeatMap:
             held.append(L)
         try:
             with self.lock:
-                already = self._lookup(req_id, user_id=user_id, kind=kind, payload=payload or {"show_id": show_id, "seat_id": seat_id})
+                already = self._lookup(req_id, user_id=user_id, kind=kind, payload=meta)
                 if already is not None:
                     return already
                 targets = []
@@ -181,19 +187,19 @@ class SeatMap:
                     one = show_seats.get(s)
                     if one is None:
                         out = Outcome("NOT_FOUND", "Show or seat does not exist.")
-                        self._record(req_id, out, user_id=user_id, kind=kind, payload={"show_id": show_id, "seat_id": seat_id})
+                        self._record(req_id, out, user_id=user_id, kind=kind, payload=meta)
                         return out
                     targets.append(one)
                 for one in targets:
                     if one.status == "BOOKED":
                         out = Outcome("ALREADY_BOOKED", "This seat is already booked.")
-                        self._record(req_id, out, user_id=user_id, kind=kind, payload={"show_id": show_id, "seat_id": seat_id})
+                        self._record(req_id, out, user_id=user_id, kind=kind, payload=meta)
                         return out
                 if pay:
                     pay_status, pay_msg, txn = pay()
                     if pay_status != "SUCCESS":
                         out = Outcome(pay_status, pay_msg)
-                        self._record(req_id, out, user_id=user_id, kind=kind, payload={"show_id": show_id, "seat_id": seat_id})
+                        self._record(req_id, out, user_id=user_id, kind=kind, payload=meta)
                         return out
                 bid = str(uuid5(NAMESPACE_URL, f"ticket-booking/{req_id}"))
                 joined = ",".join(picked)
@@ -203,7 +209,7 @@ class SeatMap:
                     one.booking = bid
                 self.bookings[bid] = Booking(bid, user_id, show_id, joined, txn=txn)
                 out = Outcome("OK", "Booking confirmed.", bid, txn)
-                self._record(req_id, out, user_id=user_id, kind=kind, payload={"show_id": show_id, "seat_id": seat_id})
+                self._record(req_id, out, user_id=user_id, kind=kind, payload=meta)
                 return out
         finally:
             i = len(held) - 1
@@ -212,18 +218,19 @@ class SeatMap:
                 i = i - 1
 
     def cancel(self, user_id, booking_id, req_id, *, kind="CANCEL_SEAT", payload=None):
+        meta = payload or {"booking_id": booking_id}
         with self.lock:
-            already = self._lookup(req_id, user_id=user_id, kind=kind, payload=payload or {"booking_id": booking_id})
+            already = self._lookup(req_id, user_id=user_id, kind=kind, payload=meta)
             if already is not None:
                 return already
             rec = self.bookings.get(booking_id)
         if rec is None:
             out = Outcome("NOT_FOUND", "Booking does not exist.")
-            self._record(req_id, out, user_id=user_id, kind=kind, payload={"booking_id": booking_id})
+            self._record(req_id, out, user_id=user_id, kind=kind, payload=meta)
             return out
         if rec.user_id != user_id:
             out = Outcome("FORBIDDEN", "Booking belongs to another user.")
-            self._record(req_id, out, user_id=user_id, kind=kind, payload={"booking_id": booking_id})
+            self._record(req_id, out, user_id=user_id, kind=kind, payload=meta)
             return out
         picked = []
         for part in rec.seat_id.split(","):
@@ -247,17 +254,17 @@ class SeatMap:
             held.append(L)
         try:
             with self.lock:
-                already = self._lookup(req_id, user_id=user_id, kind=kind, payload=payload or {"booking_id": booking_id})
+                already = self._lookup(req_id, user_id=user_id, kind=kind, payload=meta)
                 if already is not None:
                     return already
                 rec = self.bookings.get(booking_id)
                 if rec is None:
                     out = Outcome("NOT_FOUND", "Booking does not exist.")
-                    self._record(req_id, out, user_id=user_id, kind=kind, payload={"booking_id": booking_id})
+                    self._record(req_id, out, user_id=user_id, kind=kind, payload=meta)
                     return out
                 if rec.status == "CANCELLED":
                     out = Outcome("ALREADY_CANCELLED", "Booking is already cancelled.", booking_id, rec.txn)
-                    self._record(req_id, out, user_id=user_id, kind=kind, payload={"booking_id": booking_id})
+                    self._record(req_id, out, user_id=user_id, kind=kind, payload=meta)
                     return out
                 for s in picked:
                     one = self.grid[rec.show_id][s]
@@ -266,7 +273,7 @@ class SeatMap:
                     one.booking = None
                 rec.status = "CANCELLED"
                 out = Outcome("OK", "Booking cancelled.", booking_id, rec.txn)
-                self._record(req_id, out, user_id=user_id, kind=kind, payload={"booking_id": booking_id})
+                self._record(req_id, out, user_id=user_id, kind=kind, payload=meta)
                 return out
         finally:
             i = len(held) - 1

@@ -1,6 +1,5 @@
 import random
 import time
-from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock, Thread
 from uuid import uuid4
 

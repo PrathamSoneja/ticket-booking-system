@@ -66,12 +66,25 @@ class RaftNode:
         self.thread = None
         self.last_beat = 0.0
         self.deadline = self._new_deadline()
+        self.req_index = {}
+        for row in self.store.entries_from(1):
+            self.req_index.setdefault(row[4], row[0])
         for row in self.store.entries_to(self.commit_index):
             idx, term, cmd, payload, req_id = row
             result = self.apply_fn(cmd, payload, req_id)
             if req_id:
                 self.results[req_id] = result
             self.last_applied = idx
+
+    def _append(self, idx, term, cmd, payload, req_id):
+        self.store.add_entry(idx, term, cmd, payload, req_id)
+        self.req_index.setdefault(req_id, idx)
+
+    def _truncate(self, idx):
+        for row in self.store.entries_from(idx):
+            if self.req_index.get(row[4], 0) >= idx:
+                del self.req_index[row[4]]
+        self.store.truncate(idx)
 
     def _new_deadline(self):
         return time.monotonic() + random.uniform(self.election_min, self.election_max)
@@ -237,12 +250,10 @@ class RaftNode:
                                 "match_index": max(0, ent.index - 1),
                             }
                         )
-                    self.store.truncate(ent.index)
+                    self._truncate(ent.index)
                     own_term = None
                 if own_term is None:
-                    self.store.add_entry(
-                        ent.index, ent.term, ent.command_type, ent.payload, ent.request_id
-                    )
+                    self._append(ent.index, ent.term, ent.command_type, ent.payload, ent.request_id)
                 expect = expect + 1
             last_new = req.prev_index + len(req.entries)
             if req.commit_index > self.commit_index:
@@ -264,21 +275,17 @@ class RaftNode:
         with self.cv:
             if self.role != "leader":
                 return "NOT_LEADER", None
-            found = None
-            for row in self.store.entries_from(1):
-                if row[4] == req_id:
-                    found = row[0]
-                    break
+            found = self.req_index.get(req_id)
             if found is None:
                 idx = self.store.last_index + 1
-                self.store.add_entry(idx, self.term, command, payload, req_id)
+                self._append(idx, self.term, command, payload, req_id)
                 self.match_index[self.node_id] = idx
             else:
                 idx = found
                 row = self.store.entry_at(found)
                 if found > self.commit_index and row[1] != self.term:
                     idx = self.store.last_index + 1
-                    self.store.add_entry(idx, self.term, command, payload, req_id)
+                    self._append(idx, self.term, command, payload, req_id)
                     self.match_index[self.node_id] = idx
             cur_term = self.term
         self._advance_commit()

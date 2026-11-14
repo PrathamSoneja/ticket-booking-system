@@ -6,6 +6,17 @@ from nltk.corpus import stopwords
 from .seed import catalog
 
 
+DOMAIN_WORDS = frozenset(
+    "book booking bookings booked seat seats ticket tickets show shows showtime cancel cancelled "
+    "cancelling cancellation refund refunds refundable payment payments pay reserve reservation "
+    "reservations available availability venue auditorium".split()
+)
+
+
+def in_domain(query):
+    return bool(DOMAIN_WORDS & set(re.findall(r"[a-z]+", query.lower())))
+
+
 @dataclass(frozen=True)
 class Topic:
     key: str

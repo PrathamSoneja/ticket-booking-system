@@ -1,10 +1,11 @@
 import json
+import math
 from hashlib import sha256
 from uuid import NAMESPACE_URL, uuid5
 
 from .auth import Auth
 from .payment import Payments
-from .state_machine import SeatMap, Outcome
+from .state_machine import Outcome, SeatMap, parse_seats
 
 
 class BookingApp:
@@ -61,11 +62,7 @@ class BookingApp:
             show_id = params.get("show_id", "")
             if show_id not in self.seats.catalog:
                 return "NOT_FOUND", [], "Show does not exist."
-            picked = []
-            for part in str(params.get("seat_id", "")).replace(";", ",").split(","):
-                bit = part.strip()
-                if bit != "" and bit not in picked:
-                    picked.append(bit)
+            picked = parse_seats(params.get("seat_id", ""))
             if not picked or len(picked) > 5:
                 return "INVALID_REQUEST", [], "Select between 1 and 5 seats."
             return (
@@ -118,58 +115,44 @@ class BookingApp:
                 )
         return "\n\n".join(bits)
 
+    def _price(self, data, seats):
+        due = self.pay.price * len(seats)
+        raw = data.get("amount", "")
+        if raw == "":
+            return None, due
+        try:
+            offered = float(raw)
+        except (TypeError, ValueError):
+            offered = math.nan
+        if not math.isfinite(offered):
+            return Outcome("INVALID_AMOUNT", "Payment amount is not a valid finite number."), None
+        if offered < due:
+            return Outcome("INVALID_AMOUNT", "Payment amount is below the required booking total."), None
+        return None, due
+
     def post(self, tok, kind, data, req_id):
         user = self.auth.token_user(tok)
         if user is None:
             return Outcome("AUTH_FAILED", "A valid session token is required.")
         if kind == "BOOK_SEAT":
-            amt_str = data.get("amount", "")
-            money = None
-            if amt_str != "":
-                try:
-                    money = float(amt_str)
-                    if not (money == money and abs(money) != float("inf")):
-                        raise ValueError
-                except (TypeError, ValueError):
-                    return Outcome("INVALID_AMOUNT", "Payment amount is not a valid finite number.")
+            seats = parse_seats(data.get("seat_id", ""))
+            err, due = self._price(data, seats)
+            if err:
+                return err
             card = data.get("card_number", "4242424242424242")
             show_id = data.get("show_id", "")
-            seat_id = data.get("seat_id", "")
-            picked = []
-            for part in str(seat_id).replace(";", ",").split(","):
-                bit = part.strip()
-                if bit != "" and bit not in picked:
-                    picked.append(bit)
-            expected = self.pay.price * len(picked)
-            if money is None:
-                money = expected
-            if money < expected:
-                return Outcome("INVALID_AMOUNT", "Payment amount is below the required booking total.")
-            if money != money or abs(money) == float("inf"):
-                return Outcome("INVALID_AMOUNT", "Payment amount is not a finite number.")
-            seat_id = ",".join(picked)
+            joined = ",".join(seats)
 
             def pay():
-                r = self.pay.charge(user, money, card, req_id)
+                r = self.pay.charge(user, due, card, req_id)
                 return r.status, r.message, r.txn
 
             return self.seats.book(
-                user,
-                show_id,
-                seat_id,
-                req_id,
-                pay,
-                kind="BOOK_SEAT",
-                payload={"show_id": show_id, "seat_id": seat_id},
+                user, show_id, joined, req_id, pay, kind=kind, payload={"show_id": show_id, "seat_id": joined}
             )
         if kind == "CANCEL_SEAT":
-            out = self.seats.cancel(
-                user,
-                data.get("booking_id", ""),
-                req_id,
-                kind="CANCEL_SEAT",
-                payload={"booking_id": data.get("booking_id", "")},
-            )
+            bid = data.get("booking_id", "")
+            out = self.seats.cancel(user, bid, req_id, kind=kind, payload={"booking_id": bid})
             if out.status == "OK" and out.txn:
                 self.pay.refund(out.txn)
             return out
@@ -182,53 +165,27 @@ class BookingApp:
         if not req_id:
             return Outcome("INVALID_REQUEST", "A request_id is required for Raft writes.")
         if kind == "BOOK_SEAT":
-            payload = {"show_id": data.get("show_id", ""), "seat_id": str(data.get("seat_id", ""))}
-            already = self.seats.result(req_id, user, kind, payload)
-            if already:
-                return already
-
+            seats = parse_seats(data.get("seat_id", ""))
+            payload = {"show_id": data.get("show_id", ""), "seat_id": ",".join(seats)}
         elif kind == "CANCEL_SEAT":
             payload = {"booking_id": data.get("booking_id", "")}
-            already = self.seats.result(req_id, user, kind, payload)
-            if already:
-                return already
         else:
             return Outcome("INVALID_REQUEST", "Unsupported post request type.")
+        already = self.seats.result(req_id, user, kind, payload)
+        if already:
+            return already
+        body = {"user_id": user, **payload}
         if kind == "BOOK_SEAT":
-            amt_str = data.get("amount", "")
-            money = None
-            if amt_str != "":
-                try:
-                    money = float(amt_str)
-                    if not (money == money and abs(money) != float("inf")):
-                        raise ValueError
-                except (TypeError, ValueError):
-                    return Outcome("INVALID_AMOUNT", "Payment amount is not a valid finite number.")
-            picked = []
-            for part in str(data.get("seat_id", "")).replace(";", ",").split(","):
-                bit = part.strip()
-                if bit != "" and bit not in picked:
-                    picked.append(bit)
-            expected = self.pay.price * len(picked)
-            if money is None:
-                money = expected
-            if money < expected:
-                return Outcome("INVALID_AMOUNT", "Payment amount is below the required booking total.")
-            check = self.pay.check(money, data.get("card_number", "4242424242424242"))
-            txn = f"tx_{uuid5(NAMESPACE_URL, 'ticket-booking/' + req_id).hex[:12]}"
-            body = {
-                "user_id": user,
-                "show_id": data.get("show_id", ""),
-                "seat_id": ",".join(picked),
-                "amount": money,
-                "txn": txn,
-                "pay_status": check.status,
-                "pay_message": check.message,
-            }
-        elif kind == "CANCEL_SEAT":
-            body = {"user_id": user, "booking_id": data.get("booking_id", "")}
-        else:
-            return Outcome("INVALID_REQUEST", "Unsupported post request type.")
+            err, due = self._price(data, seats)
+            if err:
+                return err
+            check = self.pay.check(due, data.get("card_number", "4242424242424242"))
+            body.update(
+                amount=due,
+                txn=f"tx_{uuid5(NAMESPACE_URL, 'ticket-booking/' + req_id).hex[:12]}",
+                pay_status=check.status,
+                pay_message=check.message,
+            )
         status, out = raft.propose(kind, json.dumps(body, separators=(",", ":")).encode(), req_id)
         if status != "OK":
             return Outcome(status, "The request could not be committed by a Raft majority.")

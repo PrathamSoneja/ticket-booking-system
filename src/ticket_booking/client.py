@@ -200,21 +200,15 @@ class Client:
                 support = json.loads(it.data.decode())
         return res.status, res.message, support
 
-    def book_seat(self, show_id, seat_id, card="4242424242424242", amount=None, req_id=None, hops=3):
+    def _post(self, kind, body, req_id, hops):
         if not self.token:
             return "AUTH_FAILED", "", "Please log in first."
-        body = {"show_id": show_id, "seat_id": seat_id, "card_number": card}
-        if amount is not None:
-            body["amount"] = str(amount)
-        if req_id:
-            rid = req_id
-        else:
-            rid = str(uuid4())
+        rid = req_id or str(uuid4())
         n = 0
         while n < hops:
             try:
                 res = self.stub.Post(
-                    pb.PostRequest(token=self.token, type="BOOK_SEAT", data=json.dumps(body).encode(), request_id=rid),
+                    pb.PostRequest(token=self.token, type=kind, data=json.dumps(body).encode(), request_id=rid),
                     timeout=self.timeout,
                 )
             except grpc.RpcError as err:
@@ -232,35 +226,14 @@ class Client:
             n = n + 1
         return "REDIRECT_FAILED", "", "Exceeded maximum redirect hops to reach cluster leader."
 
+    def book_seat(self, show_id, seat_id, card="4242424242424242", amount=None, req_id=None, hops=3):
+        body = {"show_id": show_id, "seat_id": seat_id, "card_number": card}
+        if amount is not None:
+            body["amount"] = str(amount)
+        return self._post("BOOK_SEAT", body, req_id, hops)
+
     def cancel_seat(self, booking_id, req_id=None, hops=3):
-        if not self.token:
-            return "AUTH_FAILED", "", "Please log in first."
-        body = {"booking_id": booking_id}
-        if req_id:
-            rid = req_id
-        else:
-            rid = str(uuid4())
-        n = 0
-        while n < hops:
-            try:
-                res = self.stub.Post(
-                    pb.PostRequest(token=self.token, type="CANCEL_SEAT", data=json.dumps(body).encode(), request_id=rid),
-                    timeout=self.timeout,
-                )
-            except grpc.RpcError as err:
-                if err.code() in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
-                    n += 1
-                    if n >= hops:
-                        return "UNAVAILABLE", "", "The booking service is unavailable."
-                    time.sleep(self.backoff * n)
-                    self._switch_server(self._next_seed())
-                    continue
-                raise
-            if res.status != "NOT_LEADER" or not res.redirect_to:
-                return res.status, res.booking_id, res.message
-            self._switch_server(res.redirect_to)
-            n = n + 1
-        return "REDIRECT_FAILED", "", "Exceeded maximum redirect hops to reach cluster leader."
+        return self._post("CANCEL_SEAT", {"booking_id": booking_id}, req_id, hops)
 
     def ask_faq(self, query, context="", show_id=""):
         if not self.token:
@@ -286,12 +259,13 @@ def main():
     parser.add_argument("--password", default="wonderland")
     parser.add_argument(
         "--action",
-        choices=["signup", "shows", "seats", "book", "cancel", "faq", "status", "analytics"],
+        choices=["signup", "shows", "seats", "book", "cancel", "mybookings", "faq", "status", "analytics"],
         default="shows",
     )
     parser.add_argument("--show-id", default="show-1")
     parser.add_argument("--seat-id", default="A1")
     parser.add_argument("--booking-id", default="")
+    parser.add_argument("--card", default="4242424242424242")
     parser.add_argument("--query", default="How do I cancel a booking?")
     args = parser.parse_args()
     c = Client(args.server)
@@ -310,9 +284,11 @@ def main():
     elif args.action == "seats":
         print(c.get_seats(args.show_id))
     elif args.action == "book":
-        print(c.book_seat(args.show_id, args.seat_id))
+        print(c.book_seat(args.show_id, args.seat_id, card=args.card))
     elif args.action == "cancel":
         print(c.cancel_seat(args.booking_id))
+    elif args.action == "mybookings":
+        print(c.get_my_bookings())
     elif args.action == "status":
         print(c.get_cluster_status())
     elif args.action == "analytics":
