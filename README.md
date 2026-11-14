@@ -499,17 +499,11 @@ imports, no shell or Docker access.
   and downloadable Markdown/JSON summaries. Node stops are done by the operator in a terminal;
   the UI shows the exact command.
 
-Local (from `src`, cluster running on 50051-50053; install the UI dependency once):
-
-```bash
-python -m pip install -r requirements-ui.txt
-```
+Local (from `src`, cluster running on 50051-50053; Streamlit is installed by `requirements.txt`):
 
 ```bash
 python -m streamlit run ui/app.py
 ```
-
-`streamlit==1.50.0` requires `packaging<26`, so pip downgrades the `packaging` pin from `requirements.txt` (26.3 -> 25.0); the full test suite was run with 25.0.
 
 Docker: http://127.0.0.1:8501.
 

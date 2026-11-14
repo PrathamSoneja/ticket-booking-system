@@ -9,4 +9,3 @@ src/ticket_booking/catalog.db-wal
 src/ticket_booking/catalog.db-shm
 .data/
 temp.py
-docs/

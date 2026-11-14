@@ -420,12 +420,17 @@ def test_cluster_election_replication_failure_and_catchup(cluster):
     assert info["log_length"] == 2
     end = time.monotonic() + 2
     while time.monotonic() < end:
-        if all(node.raft.commit_index == 2 for node in cluster.values()):
+        # commit_index is advanced just before entries are applied; wait for both
+        if all(
+            node.raft.commit_index == 2 and node.raft.last_applied == 2
+            for node in cluster.values()
+        ):
             break
         time.sleep(0.03)
     for node in cluster.values():
         assert node.app.seats.grid["show-1"]["A1"].status == "BOOKED", node.raft.status()
         assert node.raft.commit_index == 2
+        assert node.raft.last_applied == 2
         assert node.app.pay.charge_count() == 1
     assert client.book_seat("show-1", "A4", card="0000000000000000")[0] == "PAYMENT_FAILED"
     for node in cluster.values():
@@ -483,10 +488,16 @@ def test_cluster_election_replication_failure_and_catchup(cluster):
     end = time.monotonic() + 5
     while time.monotonic() < end:
         status = restarted.raft.status()
-        if status["commit_index"] == cluster[survivor].raft.commit_index:
+        # commit_index is advanced just before entries are applied; wait for both
+        if (
+            status["commit_index"] == cluster[survivor].raft.commit_index
+            and status["commit_index"] == cluster[next_leader].raft.commit_index
+            and status["last_applied"] == status["commit_index"]
+        ):
             break
         time.sleep(0.05)
     assert restarted.raft.commit_index == cluster[next_leader].raft.commit_index
+    assert restarted.raft.last_applied == restarted.raft.commit_index
     assert restarted.app.seats.grid["show-1"]["A1"].status == "BOOKED"
     assert restarted.app.seats.grid["show-1"]["A2"].status == "BOOKED"
     assert restarted.app.seats.grid["show-2"]["A1"].status == "BOOKED"
