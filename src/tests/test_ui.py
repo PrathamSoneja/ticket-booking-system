@@ -133,3 +133,25 @@ def test_streamlit_views_render_against_live_cluster(live, monkeypatch):
     next(b for b in at.button if b.label == "Run race").click().run()
     assert not at.exception
     assert any(s.value.startswith("PASS: at most one OK booking") for s in at.success)
+
+
+def test_booking_view_shows_stale_seat_map_when_quorum_is_lost(live, monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    c, cfg, token = live
+    monkeypatch.setenv("TB_NODES", ",".join(f"{k}={v}" for k, v in cfg.nodes.items()))
+    monkeypatch.setenv("TB_REDIRECT_MAP", "")
+    at = AppTest.from_file(str(UI_DIR / "app.py"), default_timeout=60)
+    at.run()
+    at.sidebar.text_input[0].input("alice")
+    at.sidebar.text_input[1].input("wonderland")
+    at.sidebar.button[0].click().run()
+    assert any("linearizable" in cap.value for cap in at.caption)
+    leader = c.leader()
+    for n in [n for n in c.ids if n != leader]:
+        c.stop(n)
+    at.run()
+    assert not at.exception
+    warnings = " ".join(w.value for w in at.warning)
+    assert "STALE" in warnings and "seat map last confirmed" in warnings, warnings
+    assert any(cb.label == "A1" for cb in at.checkbox)

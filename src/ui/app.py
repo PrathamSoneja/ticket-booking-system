@@ -93,7 +93,14 @@ def booking_view():
     c = client()
     with st.spinner("Loading shows..."):
         status, shows, msg = c.get_shows()
-    if status != "OK":
+    if status == "OK":
+        ss.shows_cache = shows
+    elif ss.get("shows_cache"):
+        # keep the page usable (and the stale seat map reachable) when reads fail
+        show_status(status, msg)
+        st.warning("STALE: showing the last loaded show list.")
+        shows = ss.shows_cache
+    else:
         show_status(status, msg)
         c.close()
         return
