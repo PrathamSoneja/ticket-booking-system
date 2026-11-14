@@ -155,3 +155,37 @@ def test_booking_view_shows_stale_seat_map_when_quorum_is_lost(live, monkeypatch
     warnings = " ".join(w.value for w in at.warning)
     assert "STALE" in warnings and "seat map last confirmed" in warnings, warnings
     assert any(cb.label == "A1" for cb in at.checkbox)
+
+
+def test_demo_lab_no_quorum_retry_survives_view_switch(live, monkeypatch):
+    """The pending no-quorum request must be retried with its original show/seat even after
+    the user visits another view (Streamlit resets widgets that were not rendered)."""
+    from streamlit.testing.v1 import AppTest
+
+    c, cfg, token = live
+    monkeypatch.setenv("TB_NODES", ",".join(f"{k}={v}" for k, v in cfg.nodes.items()))
+    monkeypatch.setenv("TB_REDIRECT_MAP", "")
+    at = AppTest.from_file(str(UI_DIR / "app.py"), default_timeout=60)
+    at.run()
+    at.sidebar.text_input[0].input("alice")
+    at.sidebar.text_input[1].input("wonderland")
+    at.sidebar.button[0].click().run()
+    at.sidebar.radio[0].set_value("Demo Lab").run()
+    at.text_input(key="nq-show").input("show-5")
+    at.text_input(key="nq-seat").input("A7")
+    leader = c.leader()
+    followers = [n for n in c.ids if n != leader]
+    for n in followers:
+        c.stop(n)
+    next(b for b in at.button if b.label == "Attempt booking now").click().run()
+    assert any("Not committed" in i.value for i in at.info)
+    at.sidebar.radio[0].set_value("Cluster Observatory").run()
+    at.sidebar.radio[0].set_value("Demo Lab").run()
+    c.restart(followers[0])
+    for _ in range(5):
+        next(b for b in at.button if b.label == "Attempt booking now").click().run()
+        if any(s.value.startswith("PASS: exactly one booking") for s in at.success):
+            break
+    assert not any("REQUEST_CONFLICT" in i.value for i in at.info), [i.value for i in at.info]
+    assert any(s.value.startswith("PASS: exactly one booking") for s in at.success)
+    assert c.nodes[leader].app.seats.grid["show-5"]["A7"].status == "BOOKED"

@@ -331,18 +331,24 @@ def demo_lab_view():
     a, b = st.columns(2)
     nq_show = a.text_input("Show", "show-6", key="nq-show")
     nq_seat = b.text_input("Seat", "A50", key="nq-seat")
+    # the pending request keeps its own show/seat: widget values reset when another view is visited
+    pending = ss.get("nq_pending")
+    if pending:
+        st.caption(f"Pending request {pending[0]} for {pending[1]}/{pending[2]} (retried unchanged).")
     if st.button("Attempt booking now"):
-        ss.setdefault("nq_rid", f"nq-{uuid4().hex[:12]}")
-        res = cluster.attempt_booking(cfg, ss.token, nq_show, nq_seat, ss.nq_rid, tl)
+        if "nq_pending" not in ss:
+            ss.nq_pending = (f"nq-{uuid4().hex[:12]}", nq_show, nq_seat)
+        rid, show, seat = ss.nq_pending
+        res = cluster.attempt_booking(cfg, ss.token, show, seat, rid, tl)
         st.write(res)
         if res["status"] == "OK":
             ok, rows = cluster.booking_charge_check(cfg, ss.token, res["booking_id"])
             ss.lab_sections.append(("No-quorum retry", [("same request ID -> one booking, one charge", ok, str(rows))]))
-            (st.success if ok else st.error)(f"{'PASS' if ok else 'FAIL'}: exactly one booking and one charge for {ss.nq_rid}")
-            del ss["nq_rid"]
+            (st.success if ok else st.error)(f"{'PASS' if ok else 'FAIL'}: exactly one booking and one charge for {rid}")
+            del ss["nq_pending"]
         else:
             ss.lab_sections.append(("No-quorum attempt", [("booking not acknowledged without quorum", True, res["status"])]))
-            st.info(f"Not committed ({res['status']}). Restart a node and press the button again: request ID {ss.nq_rid} is reused.")
+            st.info(f"Not committed ({res['status']}). Restart a node and press the button again: request ID {rid} for {show}/{seat} is reused.")
 
     st.subheader("Timeline")
     st.dataframe(tl.events, hide_index=True, use_container_width=True)
