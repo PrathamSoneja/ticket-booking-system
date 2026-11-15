@@ -526,6 +526,23 @@ python -m streamlit run ui/app.py
 
 Docker: http://127.0.0.1:8501.
 
+### 14a. The Night Programme (custom web UI + local HTTP gateway)
+
+A second, art-directed interface over the same cluster. The Streamlit UI above is unchanged and
+remains the fallback. Browsers cannot call plain gRPC, so a small standard-library HTTP gateway
+(`src/web/gateway.py`) translates: **browser → gateway (127.0.0.1:8600) → gRPC nodes**. The
+gateway reuses `ticket_booking.client.Client` and `ui/cluster.py`; it adds no dependencies and
+holds no booking, payment or auth rules.
+
+From `src`, with the three nodes (and optionally the FAQ service) running as in section 5:
+
+```powershell
+.\.venv\Scripts\python.exe -m web.gateway
+```
+
+Open http://localhost:8600. Details, security model and limitations: [src/web/README.md](src/web/README.md).
+Tests: `python -m pytest tests/test_web_gateway.py`.
+
 
 ## 15. Failure Demonstrations (local processes)
 
