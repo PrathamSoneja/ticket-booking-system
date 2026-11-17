@@ -15,7 +15,8 @@ and everything is written in **Python**.
 A detailed explanation of every concept and component is in
 [docs/Project_Explanation.md](docs/Project_Explanation.md). Exact steps for recording the demo
 are in [docs/Demo_Recording_Steps.md](docs/Demo_Recording_Steps.md). The slide deck is
-[docs/AOS_Project_Presentation.pptx](docs/AOS_Project_Presentation.pptx).
+[docs/AOS_Project_Presentation.pptx](docs/AOS_Project_Presentation.pptx), and individual
+contributions and learnings are in [docs/Reflection.md](docs/Reflection.md).
 
 ---
 
@@ -297,6 +298,19 @@ From `src`, the basic race/idempotency script:
 python -m ticket_booking.stress_test_clients --server 127.0.0.1:50051 --race-workers 15
 ```
 
+### Code style
+
+Formatting and linting use Ruff, configured in `src/pyproject.toml` (line length 120,
+generated protobuf code excluded). From `src`, with Ruff installed (`pip install ruff`):
+
+```bash
+ruff format .
+```
+
+```bash
+ruff check .
+```
+
 ## 6. Team contributions
 
 All three members contributed equally to design, implementation, testing, debugging,
@@ -323,7 +337,8 @@ deployment and documentation across the whole project.
   check and safe fallback.
 - SQLite catalogue and seed data for shows and FAQs; mock payment, pricing and refund
   handling.
-- Streamlit web UI: Booking view, Cluster Observatory and Demo Lab.
+- Streamlit web UI: Booking view, Cluster Observatory, Demo Lab and the Consensus
+  Transparency novelty view.
 - LLM, payment and UI tests, and the UI verification workflow.
 
 ## 7. Security notes and limitations

@@ -64,8 +64,9 @@ def main():
         for f in as_completed(futs):
             print(f.result())
 
-    print(f"\n=== Phase 2: {args.race_workers} threads racing for the SAME seat "
-          f"({args.show_id}/{args.seat_id}) ===")
+    print(
+        f"\n=== Phase 2: {args.race_workers} threads racing for the SAME seat " f"({args.show_id}/{args.seat_id}) ==="
+    )
     with ThreadPoolExecutor(max_workers=args.race_workers) as pool:
         futs = [
             pool.submit(
@@ -82,10 +83,12 @@ def main():
 
     tally = Counter(results)
     print("Outcome tally:", dict(tally))
-    print("Expected: exactly 1x 'OK', rest 'ALREADY_BOOKED' -> "
-          f"{'PASS' if tally.get('OK', 0) == 1 else 'CHECK MANUALLY'}")
+    print(
+        "Expected: exactly 1x 'OK', rest 'ALREADY_BOOKED' -> "
+        f"{'PASS' if tally.get('OK', 0) == 1 else 'CHECK MANUALLY'}"
+    )
 
-    print(f"\n=== Phase 3: retrying the SAME request_id (idempotency check) ===")
+    print("\n=== Phase 3: retrying the SAME request_id (idempotency check) ===")
     shared_req_id = str(uuid4())
     with ThreadPoolExecutor(max_workers=5) as pool:
         futs = [
@@ -104,8 +107,10 @@ def main():
 
     unique_booking_ids = {bid for (status, bid) in retry_results if status == "OK"}
     print("Retry results:", retry_results)
-    print("Expected: all identical booking_id despite 5 retries -> "
-          f"{'PASS' if len(unique_booking_ids) <= 1 else 'FAIL (duplicate bookings!)'}")
+    print(
+        "Expected: all identical booking_id despite 5 retries -> "
+        f"{'PASS' if len(unique_booking_ids) <= 1 else 'FAIL (duplicate bookings!)'}"
+    )
 
 
 if __name__ == "__main__":

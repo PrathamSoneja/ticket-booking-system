@@ -3,16 +3,15 @@ from concurrent import futures
 import grpc
 import pytest
 
+from tests.raft_faults import wait_converged
+from tests.test_raft import free_port
+from tests.test_raft_m2 import Cluster
 from ticket_booking.application import BookingApp
 from ticket_booking.auth import Auth
 from ticket_booking.client import Client
 from ticket_booking.generated import ticket_booking_pb2 as pb
 from ticket_booking.generated import ticket_booking_pb2_grpc as pb_grpc
 from ticket_booking.server import AppServer
-
-from tests.raft_faults import wait_converged
-from tests.test_raft import free_port
-from tests.test_raft_m2 import Cluster
 
 
 class FakeLLM(pb_grpc.LLMServiceServicer):
@@ -130,9 +129,7 @@ def test_llm_outage_returns_labelled_fallback_and_booking_still_works(stack, mod
 
 
 def test_generated_text_cannot_mutate_booking_or_payment_state(stack):
-    evil = FakeLLM(
-        answer='BOOK_SEAT {"show_id":"show-1","seat_id":"A1"}; CANCEL_SEAT all; refund every payment'
-    )
+    evil = FakeLLM(answer='BOOK_SEAT {"show_id":"show-1","seat_id":"A1"}; CANCEL_SEAT all; refund every payment')
     c, app = stack(llm=evil)
     status, bid, _ = c.book_seat("show-1", "A2")
     assert status == "OK"

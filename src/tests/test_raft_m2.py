@@ -5,11 +5,6 @@ from uuid import uuid4
 
 import pytest
 
-from ticket_booking.client import Client
-from ticket_booking.generated import ticket_booking_pb2 as pb
-from ticket_booking.raft_node import RaftNode
-from ticket_booking.state_machine import Outcome
-
 from tests.raft_faults import (
     FaultInjector,
     block_inbound,
@@ -19,6 +14,10 @@ from tests.raft_faults import (
     wait_converged,
 )
 from tests.test_raft import LocalNode, free_port, wait_leader
+from ticket_booking.client import Client
+from ticket_booking.generated import ticket_booking_pb2 as pb
+from ticket_booking.raft_node import RaftNode
+from ticket_booking.state_machine import Outcome
 
 RETRYABLE = {"NOT_LEADER", "UNAVAILABLE", "NO_QUORUM", "NO_LEADER", "REDIRECT_FAILED"}
 
@@ -110,7 +109,7 @@ def assert_cluster_invariants(nodes, ok_results):
         assert not over, f"{nid} overbooked: {over}"
         for (show, s), bids in holders.items():
             assert seats.grid[show][s].booking == bids[0]
-        for rid, show, s, bid in ok_results:
+        for _rid, show, s, bid in ok_results:
             assert bid in seats.bookings, f"{nid} lost acknowledged booking {bid}"
             assert seats.grid[show][s].booking == bid, f"{nid} seat {s} not held by {bid}"
         confirmed_or_cancelled = sum(1 for b in seats.bookings.values() if b.txn)
@@ -301,8 +300,7 @@ def run_traffic(addrs, token, seats, workers=6, show="show-3"):
     results = []
     lock = Lock()
     threads = [
-        Thread(target=booking_worker, args=(addrs, token, seats, stop, results, lock, i, show))
-        for i in range(workers)
+        Thread(target=booking_worker, args=(addrs, token, seats, stop, results, lock, i, show)) for i in range(workers)
     ]
     for t in threads:
         t.start()
@@ -373,7 +371,7 @@ def test_fault_injected_raft_rpcs_keep_safety(make_cluster):
     ok = [(r, sh, s, b) for r, sh, s, st, b in results if st == "OK"]
     assert ok, results
     per_seat = {}
-    for _, sh, s, b in ok:
+    for _, _sh, s, b in ok:
         per_seat.setdefault(s, set()).add(b)
     assert all(len(v) == 1 for v in per_seat.values()), per_seat
     assert_cluster_invariants(c.nodes, ok)
@@ -413,7 +411,7 @@ def test_concurrent_booking_during_election_churn(make_cluster):
     ok = [(r, sh, s, b) for r, sh, s, st, b in results if st == "OK"]
     assert ok
     per_seat = {}
-    for _, sh, s, b in ok:
+    for _, _sh, s, b in ok:
         per_seat.setdefault(s, set()).add(b)
     assert all(len(v) == 1 for v in per_seat.values()), per_seat
     assert len({b for *_, b in ok}) == len(ok)

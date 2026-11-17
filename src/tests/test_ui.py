@@ -25,8 +25,17 @@ def imported_modules(path):
 @pytest.mark.parametrize("name", ["app.py", "cluster.py"])
 def test_ui_is_grpc_only(name):
     mods = imported_modules(UI_DIR / name)
-    forbidden = {"sqlite3", "subprocess", "docker", "ticket_booking.application", "ticket_booking.state_machine",
-                 "ticket_booking.payment", "ticket_booking.auth", "ticket_booking.raft_node", "ticket_booking.seed"}
+    forbidden = {
+        "sqlite3",
+        "subprocess",
+        "docker",
+        "ticket_booking.application",
+        "ticket_booking.state_machine",
+        "ticket_booking.payment",
+        "ticket_booking.auth",
+        "ticket_booking.raft_node",
+        "ticket_booking.seed",
+    }
     assert not (mods & forbidden), mods & forbidden
     src = (UI_DIR / name).read_text()
     for bad in ("BookingApp", "os.system", "Popen", "docker.sock"):

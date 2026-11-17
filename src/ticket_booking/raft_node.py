@@ -11,7 +11,6 @@ from .generated import ticket_booking_pb2 as pb
 from .generated import ticket_booking_pb2_grpc as pb_grpc
 from .raft_storage import RaftStorage
 
-
 log = logging.getLogger("ticket_booking.raft")
 
 
@@ -150,22 +149,19 @@ class RaftNode:
                 self.cv.wait(min(0.05, end - time.monotonic()))
             return self.leader_id
 
+    def _vote_reply(self, to, granted):
+        return pb.RequestVoteReply(**{"from": self.node_id, "to": to, "term": self.term, "vote_granted": granted})
+
+    def _append_reply(self, to, ok, match):
+        return pb.AppendEntriesReply(
+            **{"from": self.node_id, "to": to, "term": self.term, "entry_appended": ok, "match_index": max(0, match)}
+        )
+
     def request_vote(self, req):
         from_id = getattr(req, "from")
         with self.cv:
-            if from_id not in self.peers:
-                return pb.RequestVoteReply(
-                    **{
-                        "from": self.node_id,
-                        "to": from_id,
-                        "term": self.term,
-                        "vote_granted": False,
-                    }
-                )
-            if req.term < self.term:
-                return pb.RequestVoteReply(
-                    **{"from": self.node_id, "to": from_id, "term": self.term, "vote_granted": False}
-                )
+            if from_id not in self.peers or req.term < self.term:
+                return self._vote_reply(from_id, False)
             if req.term > self.term:
                 self._set_term(req.term, None)
             last_idx = self.store.last_index
@@ -181,33 +177,13 @@ class RaftNode:
                 self.deadline = self._new_deadline()
                 log.info("%s voted for %s in term %s", self.node_id, from_id, self.term)
                 self.cv.notify_all()
-            return pb.RequestVoteReply(
-                **{"from": self.node_id, "to": from_id, "term": self.term, "vote_granted": granted}
-            )
+            return self._vote_reply(from_id, granted)
 
     def append_entries(self, req):
         from_id = getattr(req, "from")
         with self.cv:
-            if from_id not in self.peers:
-                return pb.AppendEntriesReply(
-                    **{
-                        "from": self.node_id,
-                        "to": from_id,
-                        "term": self.term,
-                        "entry_appended": False,
-                        "match_index": self.store.last_index,
-                    }
-                )
-            if req.term < self.term:
-                return pb.AppendEntriesReply(
-                    **{
-                        "from": self.node_id,
-                        "to": from_id,
-                        "term": self.term,
-                        "entry_appended": False,
-                        "match_index": self.store.last_index,
-                    }
-                )
+            if from_id not in self.peers or req.term < self.term:
+                return self._append_reply(from_id, False, self.store.last_index)
             if req.term > self.term:
                 self._set_term(req.term, None)
             self.role = "follower"
@@ -216,59 +192,26 @@ class RaftNode:
             self.cv.notify_all()
             prev_term = self.store.term_at(req.prev_index)
             if prev_term is None or prev_term != req.prev_term:
-                matched = min(req.prev_index - 1, self.store.last_index)
-                return pb.AppendEntriesReply(
-                    **{
-                        "from": self.node_id,
-                        "to": from_id,
-                        "term": self.term,
-                        "entry_appended": False,
-                        "match_index": max(0, matched),
-                    }
-                )
+                return self._append_reply(from_id, False, min(req.prev_index - 1, self.store.last_index))
             expect = req.prev_index + 1
             for ent in req.entries:
                 if ent.index != expect:
-                    return pb.AppendEntriesReply(
-                        **{
-                            "from": self.node_id,
-                            "to": from_id,
-                            "term": self.term,
-                            "entry_appended": False,
-                            "match_index": max(0, expect - 1),
-                        }
-                    )
+                    return self._append_reply(from_id, False, expect - 1)
                 own_term = self.store.term_at(ent.index)
                 if own_term is not None and own_term != ent.term:
                     if ent.index <= self.commit_index:
-                        return pb.AppendEntriesReply(
-                            **{
-                                "from": self.node_id,
-                                "to": from_id,
-                                "term": self.term,
-                                "entry_appended": False,
-                                "match_index": max(0, ent.index - 1),
-                            }
-                        )
+                        return self._append_reply(from_id, False, ent.index - 1)
                     self._truncate(ent.index)
                     own_term = None
                 if own_term is None:
                     self._append(ent.index, ent.term, ent.command_type, ent.payload, ent.request_id)
-                expect = expect + 1
+                expect += 1
             last_new = req.prev_index + len(req.entries)
             if req.commit_index > self.commit_index:
                 self.commit_index = max(self.commit_index, min(req.commit_index, last_new))
                 self.store.set_commit(self.commit_index)
         self._apply_committed()
-        return pb.AppendEntriesReply(
-            **{
-                "from": self.node_id,
-                "to": from_id,
-                "term": self.term,
-                "entry_appended": True,
-                "match_index": req.prev_index + len(req.entries),
-            }
-        )
+        return self._append_reply(from_id, True, last_new)
 
     def propose(self, command, payload, req_id, timeout=5.0):
         end = time.monotonic() + timeout
@@ -409,7 +352,7 @@ class RaftNode:
         for peer, stub in self.stubs.items():
             jobs[peer] = self.pool.submit(stub.RequestVote, req, timeout=0.3)
         votes = 1
-        for peer, job in jobs.items():
+        for job in jobs.values():
             try:
                 res = job.result(timeout=0.4)
             except (grpc.RpcError, TimeoutError):
@@ -505,9 +448,7 @@ class RaftNode:
                     self.match_index[peer] = max(self.match_index.get(peer, 0), res.match_index)
                     self.next_index[peer] = self.match_index[peer] + 1
                 else:
-                    self.next_index[peer] = max(
-                        1, min(self.next_index.get(peer, 1) - 1, res.match_index + 1)
-                    )
+                    self.next_index[peer] = max(1, min(self.next_index.get(peer, 1) - 1, res.match_index + 1))
                 # a same-term reply (success or log mismatch) proves the peer accepts us as leader
                 return res.term == cur_term
 

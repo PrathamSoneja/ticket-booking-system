@@ -2,15 +2,14 @@ import sys
 
 import pytest
 
-from ticket_booking import client as cli
-from ticket_booking.client import Client
-from ticket_booking.raft_node import RaftNode
-from ticket_booking.state_machine import Outcome
-from ticket_booking.generated import ticket_booking_pb2 as pb
-
 from tests.raft_faults import wait_converged
 from tests.test_m2_features import FakeLLM, start_app, start_llm
 from tests.test_raft_m2 import Cluster
+from ticket_booking import client as cli
+from ticket_booking.client import Client
+from ticket_booking.generated import ticket_booking_pb2 as pb
+from ticket_booking.raft_node import RaftNode
+from ticket_booking.state_machine import Outcome
 
 
 @pytest.fixture
@@ -111,9 +110,24 @@ def test_cli_lists_own_bookings_and_can_use_a_declining_mock_card(app_server, mo
     assert "'OK'" in out
     out = run_cli(monkeypatch, capsys, "--server", addr, "--action", "mybookings")
     assert "show-3" in out and "A5" in out and "CONFIRMED" in out
-    out = run_cli(monkeypatch, capsys, "--server", addr, "--username", "bob", "--password", "builder", "--action", "mybookings")
+    out = run_cli(
+        monkeypatch, capsys, "--server", addr, "--username", "bob", "--password", "builder", "--action", "mybookings"
+    )
     assert "A5" not in out
-    out = run_cli(monkeypatch, capsys, "--server", addr, "--action", "book", "--show-id", "show-3", "--seat-id", "A6", "--card", "4000000000000000")
+    out = run_cli(
+        monkeypatch,
+        capsys,
+        "--server",
+        addr,
+        "--action",
+        "book",
+        "--show-id",
+        "show-3",
+        "--seat-id",
+        "A6",
+        "--card",
+        "4000000000000000",
+    )
     assert "PAYMENT_FAILED" in out
 
 
@@ -133,7 +147,7 @@ def test_propose_does_not_scan_the_log_for_request_ids(tmp_path):
     real = node.store.entries_from
     node.store.entries_from = lambda idx: calls.append(idx) or real(idx)
     assert node.propose("TEST", b"x", "r7") == ("OK", Outcome("OK", "r7"))
-    assert node.propose("TEST", b"x", "new") [0] == "OK"
+    assert node.propose("TEST", b"x", "new")[0] == "OK"
     assert 1 not in calls
     assert node.store.last_index == 51
     node.close()
@@ -153,13 +167,25 @@ def test_request_index_forgets_truncated_entries(tmp_path):
     seen = []
     node = RaftNode("n1", {"n2": "127.0.0.1:1"}, tmp_path / "t.db", lambda c, p, r: seen.append(r) or Outcome("OK", r))
     first = pb.AppendEntriesArgs(
-        **{"from": "n2", "term": 1, "prev_index": 0, "prev_term": 0, "commit_index": 0,
-           "entries": [pb.LogEntry(index=1, term=1, command_type="TEST", payload=b"a", request_id="gone")]}
+        **{
+            "from": "n2",
+            "term": 1,
+            "prev_index": 0,
+            "prev_term": 0,
+            "commit_index": 0,
+            "entries": [pb.LogEntry(index=1, term=1, command_type="TEST", payload=b"a", request_id="gone")],
+        }
     )
     assert node.append_entries(first).entry_appended
     replace = pb.AppendEntriesArgs(
-        **{"from": "n2", "term": 2, "prev_index": 0, "prev_term": 0, "commit_index": 1,
-           "entries": [pb.LogEntry(index=1, term=2, command_type="TEST", payload=b"b", request_id="other")]}
+        **{
+            "from": "n2",
+            "term": 2,
+            "prev_index": 0,
+            "prev_term": 0,
+            "commit_index": 1,
+            "entries": [pb.LogEntry(index=1, term=2, command_type="TEST", payload=b"b", request_id="other")],
+        }
     )
     assert node.append_entries(replace).entry_appended
     assert seen == ["other"]

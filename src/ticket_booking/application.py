@@ -30,7 +30,7 @@ class BookingApp:
         return self.auth.signup(uname, pw)
 
     def logout(self, tok):
-        if self.auth.logout(tok) == True:
+        if self.auth.logout(tok) is True:
             return Outcome("OK", "Logged out.")
         else:
             return Outcome("AUTH_FAILED", "Invalid or expired session.")
@@ -39,7 +39,7 @@ class BookingApp:
         user = self.auth.token_user(tok)
         if user is None:
             return "AUTH_FAILED", [], "A valid session token is required."
-        if params == None:
+        if params is None:
             params = {}
         if kind == "SHOWS":
             return "OK", self.seats.shows(), ""
@@ -56,7 +56,9 @@ class BookingApp:
         if kind == "MY_BOOKINGS":
             rows = self.seats.user_bookings(user)
             for row in rows:
-                row.update(self.pay.txn_summary(row["txn"]) if row["txn"] else {"charges": 0, "amount": 0.0, "refunded": False})
+                row.update(
+                    self.pay.txn_summary(row["txn"]) if row["txn"] else {"charges": 0, "amount": 0.0, "refunded": False}
+                )
             return "OK", rows, ""
         if kind == "QUOTE":
             show_id = params.get("show_id", "")
@@ -86,7 +88,7 @@ class BookingApp:
         return h.hexdigest()[:16]
 
     def faq_context(self, query, params=None):
-        if params == None:
+        if params is None:
             params = {}
         bits = []
         extra = params.get("context", "")
@@ -106,10 +108,7 @@ class BookingApp:
                     if s["status"] == "AVAILABLE":
                         free.append(s["seat_id"])
                 booked = len(lst) - len(free)
-                if free:
-                    free_str = ", ".join(free)
-                else:
-                    free_str = "none"
+                free_str = ", ".join(free) if free else "none"
                 bits.append(
                     f"Live committed seat map for {show_id}: {len(free)} available, {booked} booked. AVAILABLE seats: {free_str}."
                 )
@@ -208,6 +207,7 @@ class BookingApp:
             self.auth.revoke_hash(body["token_hash"])
             return Outcome("OK", "Session revoked.")
         if kind == "BOOK_SEAT":
+
             def pay():
                 if body["pay_status"] != "SUCCESS":
                     return body["pay_status"], body["pay_message"], ""
