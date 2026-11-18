@@ -1,343 +1,62 @@
-# Distributed Ticket Booking System
-
-This system is intended to serve as a dependable platform for booking tickets concurrently. It demonstrates how clients and servers communicate through gRPC, how in-memory state is managed in a thread safe manner using a mutex, and how shows and FAQs are stored persistently in SQLite. Payment handling is carried out with deterministic mock logic, the cluster leader is redirected in a transparent way, and questions posed in natural language are answered by a locally hosted language model.
-
-The M2 app-server mode uses Raft for leader election, replicated logs, majority commits, and follower recovery. Each app node keeps its Raft term, vote, and log in a separate SQLite database; the catalog database remains unchanged.
-
-## 1. Main Features and Technologies
-
-Main features:
-
-- User registration and authentication with password hashing and expiring session tokens
-- Browse show schedules and real-time seat availability
-- Multi-seat reservations up to 5 seats per request
-- Concurrent booking protection using ordered per-seat locks
-- Idempotent request handling
-- Raft-backed three-node booking replication and leader failover
-- Mock payment and refund handling
-- Context-aware support chat and an Ollama LLM service
-- Client redirection from follower nodes to the leader node
-- Automated unit, integration, and concurrency stress tests
-
-Technologies:
-
-- Python 3.13
-- gRPC 
-- Protocol Buffers 
-- SQLite3 
-- Ollama
-- NLTK 3.10.3
-- Pytest 8.4.2
-
-
-
-## 2. How the Client, Server, Database, and Ticket Booking Flow Work
-
-System architecture:
-
-- Client: Through gRPC stubs, a Python command-line interface talks to the server. The session token is kept after login, and when write requests land on follower nodes, the client follows the leader redirection on its own.
-- Server: Client requests are handled by a gRPC application server. In M2 mode, Raft elects a leader, replicates commands, and applies them after a majority commit. Followers forward reads to the leader and redirect writes; the leader answers reads only after a ReadIndex barrier (see section 12). Signup, login sessions, and logout are kept usable across nodes.
-- Database: Static show schedules and support FAQ topics sit in an embedded SQLite database (catalog. db). If the tables are empty when the process starts, seed data is loaded into SQLite.
-- LLM Service: A separate gRPC service (LLMService) finds matching FAQ documents through keyword overlap and NLTK stopwords, takes live seat availability from the application server, and calls Ollama at [http://127.0.0.1:11434/api/generate](http://127.0.0.1:11434/api/generate).
-
-Ticket booking flow:
-
-1. The client is where the user logs in or signs up. Once the credentials pass verification on the server side, a 32-byte session token comes back in the response.
-2. A request then goes out for the available shows, or for the seats at one particular show. Catalog data and the live seat map are both queried by the server.
-3. For a booking, the user sends in a request that names the show ID and the seat IDs, along with the payment card details.
-  Should the request land on a follower node, that follower answers with status NOT_LEADER and passes back the leader address. The client then reconnects to the leader.
-4. At the leader, the session token is validated, and a check is made as to whether that request ID has been dealt with before.
-5. The leader goes through every requested seat in sorted order and takes out locks on them, which is what keeps deadlocks from arising.
-6. The leader verifies that all requested seats are currently AVAILABLE. If any seat is already booked, the request fails with status ALREADY_BOOKED.
-7. If seats are available, the leader processes the mock payment. Cards starting or ending with 0000 are declined with PAYMENT_FAILED, leaving seats unreserved.
-8. Upon successful payment, seats transition to BOOKED status with the user ID and generated booking ID. The booking record is saved and the result is returned to the client.
-9. If the user cancels a booking, the leader verifies ownership, marks seats back to AVAILABLE, sets booking status to CANCELLED, and issues an automatic refund.
-
-
-
-## 3. Requirements
-
-System requirements:
-
-- Operating System: Windows
-- Python: Version 3.13
-- Git
-- Ollama
-
-
-
-## 4. Complete Project Setup
-
-Run from inside the src directory.
-
-Windows (PowerShell):
-
-```powershell
-cd src
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python scripts\generate_proto.py
-python -c "import nltk; nltk.download('stopwords')"
-```
-
-LLM setup for FAQ service:
-
-1. Install Ollama from [https://ollama.com](https://ollama.com)
-2. Pull the required language model:
-
-```bash
-ollama pull llama3.2:1b
-```
-
-Keep the Ollama application or daemon running in the background.
-
-## 5. Server Installation and Start Command
-
-Step 1: Start the LLM FAQ service (Terminal 1):
-
-```bash
-python -m ticket_booking.llm_service
-```
-
-This runs the FAQ gRPC service on port 50055.
-
-Step 2: Start the application server (Terminal 2):
-
-```bash
-python -m ticket_booking.server
-```
-
-This starts the leader application server on port 50051.
-
-(Optional) follower node setup: To run an additional follower node that redirects writes to the leader:
-
-```bash
-python -m ticket_booking.server --follower --leader 127.0.0.1:50051 --port 50052
-```
-
-This legacy single-server/follower setup remains for M1 compatibility. For M2, start each app process with the same peer list and its own persistent data directory. From `src`, start the FAQ server in a separate terminal if FAQ requests are needed:
-
-```powershell
-python -m ticket_booking.llm_service
-```
-
-Then start the three app processes from `src`:
-
-```powershell
-python -m ticket_booking.server --node-id node-1 --peers node-1=127.0.0.1:50051,node-2=127.0.0.1:50052,node-3=127.0.0.1:50053 --data-dir data\node-1
-```
-
-```powershell
-python -m ticket_booking.server --node-id node-2 --peers node-1=127.0.0.1:50051,node-2=127.0.0.1:50052,node-3=127.0.0.1:50053 --data-dir data\node-2
-```
-
-```powershell
-python -m ticket_booking.server --node-id node-3 --peers node-1=127.0.0.1:50051,node-2=127.0.0.1:50052,node-3=127.0.0.1:50053 --data-dir data\node-3
-```
-
-Wait for the election log, then send client requests to any app address. `--peers` includes every node, including the current node. `--client-addresses` is optional and defaults to `--peers`; set it when clients use different hostnames or published ports than the nodes use for Raft communication. Raft state is written to `<data-dir>/raft.db`; do not reuse a data directory for multiple nodes. A read sent to a follower is forwarded to the leader, which serves it only after confirming its leadership with a majority (linearizable reads; see section 12).
-
-For Docker Compose see section 13. The app nodes are published on localhost ports 50051–50053, and advertised client addresses use those ports so redirects work from the host. For another-machine access, configure host bindings and `--client-addresses` for reachable addresses; do not expose these plaintext gRPC ports to an untrusted network. Raft state lives in the named volumes `node-1-data`, `node-2-data`, `node-3-data` (the old `.data/` bind mounts are no longer used).
-
-Available server command-line options:
-
-- --port: Listening port for the application server (default: 50051)
-- --llm-server: Address of the LLM service (default: 127.0.0.1:50055)
-- --follower: Run in follower mode (redirects write requests to leader)
-- --leader: Address of cluster leader to provide in redirect responses (legacy mode)
-- --node-id: Raft identity for this app node
-- --peers: Comma-separated node-id=host:port list including this node
-- --client-addresses: Optional client-reachable node-id=host:port list for follower redirects
-- --data-dir: Persistent directory for this node's SQLite Raft database
-
-
-
-## 6. Client Installation and Start Command
-
-Run the commands from the src directory in the virtual environment.
-
-List shows:
-
-```bash
-python -m ticket_booking.client --action shows
-```
-
-List seats for a show:
-
-```bash
-python -m ticket_booking.client --action seats --show-id show-1
-```
-
-Book a single seat:
-
-```bash
-python -m ticket_booking.client --action book --show-id show-1 --seat-id A1
-```
-
-Book multiple seats (up to 5 seats):
-
-```bash
-python -m ticket_booking.client --action book --show-id show-1 --seat-id A1,A2,A3
-```
-
-List your own bookings (booking IDs, status, charge count, refund):
-
-```bash
-python -m ticket_booking.client --action mybookings
-```
-
-Cancel a booking:
-
-```bash
-python -m ticket_booking.client --action cancel --booking-id <booking_id_from_booking>
-```
-
-Book with the declining mock card (no booking, no charge):
-
-```bash
-python -m ticket_booking.client --action book --show-id show-1 --seat-id A9 --card 4000000000000000
-```
-
-Ask an FAQ support question:
-
-```bash
-python -m ticket_booking.client --action faq --query "How do I cancel a booking?"
-python -m ticket_booking.client --server 127.0.0.1:50052 --action status
-python -m ticket_booking.client --action analytics
-```
-
-Register a new user account:
-
-```bash
-python -m ticket_booking.client --action signup --username charlie --password GoodPass1
-```
-
-Client command-line options:
-
-- --server: Target server address (default: 127.0.0.1:50051)
-- --username: Username for authentication (default: alice)
-- --password: Password for authentication (default: wonderland)
-- --action: Operation to execute (signup, shows, seats, book, cancel, mybookings, faq, status, analytics; default: shows)
-- --show-id: Show identifier for seats, bookings, or FAQs (default: show-1)
-- --seat-id: Seat identifier or comma-separated list of up to 5 seats (default: A1)
-- --booking-id: Booking identifier used for cancellations
-- --card: Mock card number for bookings (default 4242424242424242 approves; numbers starting or ending in 0000 are declined)
-- --query: Support question string for FAQ requests
-
-
-
-## 7. Database Setup
-
-Database setup:
-
-- Database engine: SQLite3
-- Database location: src/ticket_booking/catalog.db
-- Initialization: src/ticket_booking/seed.py.
-- Seed data:
-  - 8 shows (show-1 through show-8), each initialized with 50 seats (A1 to A50).
-  - 6 policy and FAQ documents covering cancellation rules, refund policies, booking procedures, advance booking windows, seat change policies, and seat availability.
-- Default user credentials:
-  - alice / wonderland
-  - bob / builder
-  - user1 through user32 with passwords pass1 through pass32
-
-
-
-## 8. How Clients Send Requests to the Server
-
-Communication protocol:
-
-- Clients connect to the server using gRPC over HTTP/2 with binary Protocol Buffers serialization.
-- REST and traditional HTTP clients (such as standard curl, browser URLs, or standard Swagger OpenAPI endpoints) are not supported directly because the endpoints are binary gRPC services.
-- If using an external API tool like Postman or grpcurl, select gRPC request mode and import src/proto/ticket_booking.proto to interact with the service methods.
-
-Request handling:
-
-- Session tokens: The client calls Login or Signup to obtain an authentication token, which must be passed in all subsequent Get and Post requests.
-- Redirection: When a write request (Post) is sent to a follower node, the follower replies with status NOT_LEADER and provides the leader address in redirect_to. The client closes the follower connection, opens a channel to the leader, and repeats the request.
-
-
-
-## 9. Testing Instructions
-
-From the src directory in virtual environment:
-
-```bash
-python -m pytest
-```
-
-Running individual test suites:
-
-```bash
-python -m pytest tests/test_proto.py
-python -m pytest tests/test_raft.py
-python -m pytest tests/test_auth.py
-python -m pytest tests/test_booking.py
-python -m pytest tests/test_payment.py
-python -m pytest tests/test_client.py
-python -m pytest tests/test_llm.py
-python -m pytest tests/test_integration.py
-```
-
-Note regarding LLM tests:
-Tests in test_llm.py and the test_cancel_faq test in test_integration.py require Ollama to be running with the llama3.2:1b model pulled. If Ollama is offline, LLM tests report UNAVAILABLE.
-
-Running multi-threaded stress and race condition tests:
-From the src directory with the server running:
-
-```bash
-python -m ticket_booking.stress_test_clients --server 127.0.0.1:50051 --race-workers 15
-```
-
-This script runs three phases:
-
-- Concurrent browsing across multiple user sessions
-- 15 concurrent threads racing to book the exact same seat
-- Concurrent retries with identical request_id
-
-
-
-## 10. Team Contributions
-
-All three members of the team contributed equally in the development, testing, debugging, documentation, deployment and final completion of this project.
-
-Pratham Soneja:
-
-- Backend and State Machine: Developed the in-memory seat allocation state machine, fine-grain seat locking mechanism and multi-seat transaction handling.
-- Concurrency and Testing: Built tools for concurrency stress testing and unit test suites to test race conditions and idempotent replay of requests.
-- Client and API Routing: Built the command line client interface, session token lifecycle and the follower to leader transparent redirection logic.
-
-Rathul Krishnan:
-
-- Developed end-to-end integration tests with gRPC channels for multi-user browsing, booking and cancelation flows.
-- System Debugging: Fixed thread sync edge cases, tested gRPC channel reliability under multi-connection loads.
-- Deployment & Documentation: Organized virtual environment setup, dependency configuration, and project documentation.
-
-Mitali Narayan:
-
-- LLM Service and Database: Built gRPC LLM service, Ollama integration and SQLite database catalog schema with automated seeding for shows and FAQ entries.
-- Retrieval Engine and Payments: NLTK keyword scoring for domain FAQ retrieval, deterministic mock payment and refund handling.
-- Project Test and Collaboration: Synchronized test suite execution between components, checked API contract adherence to protobuf definitions, helped with documentation..
-
-
-
-## 11. Milestone 2 Architecture
+# Distributed Ticket Booking System with gRPC and Raft
+
+Course: **Advanced Operating Systems (CS G623)**, BITS Pilani, First Semester 2026-27
+Project option: **A - Distributed Ticket Booking System**
+
+Team: **Pratham Soneja, Rathul Krishnan, Mitali Narayan**
+
+A fault-tolerant ticket booking service. Users sign up, browse shows, see a live seat map,
+book up to five seats with a mock payment, cancel with a refund, and ask a support chatbot
+backed by a local LLM. Three application servers keep every booking in a replicated log using
+the **Raft consensus algorithm**, so the system keeps working, and never double-books a seat,
+when a server (including the leader) crashes. All services talk to each other over **gRPC**,
+and everything is written in **Python**.
+
+The slide deck is [docs/AOS_Project_Presentation.pptx](docs/AOS_Project_Presentation.pptx), and
+individual contributions and learnings are in [docs/Reflection.md](docs/Reflection.md).
+
+---
+
+## 1. How it works (in one page)
+
+1. A **client** (command-line client, web UI, or load generator) calls the gRPC
+   `ClientService` on any application node: `Login`, `Signup`, `Logout`, `Get`, `Post`.
+2. The three **application nodes** run Raft. One is elected **leader**; the others are
+   **followers**.
+3. A **write** (book, cancel, signup, login session, logout) must go to the leader. A follower
+   answers `NOT_LEADER` with the leader's address and the client retries there.
+4. The leader turns the write into a **log entry**, sends it to the followers with
+   `AppendEntries`, and **commits** it once a majority (2 of 3) has stored it. Only then is it
+   applied to the seat map and the payment ledger, and the client gets `OK`.
+5. A **read** (shows, seats, my bookings, price quote, FAQ) is forwarded to the leader, which
+   first confirms with a majority that it is still the leader (a *read barrier*), so nobody
+   ever sees an out-of-date seat map.
+6. If the leader dies, a follower's election timer fires, it asks for votes with
+   `RequestVote`, wins a majority, and becomes the new leader. Committed bookings survive
+   because a majority already stored them, and a node can only win if its log is up to date.
+7. A crashed node restarts from its own SQLite database, replays its committed log, and the
+   leader sends it whatever it missed.
+8. FAQ questions go from the leader to a separate **LLM server** over gRPC. The LLM server finds
+   matching FAQ text, adds the live seat map if relevant, and asks a local model (Ollama,
+   `llama3.2:1b`) to answer from that context only. If the LLM is down, the user gets the FAQ
+   text itself, clearly labelled, and bookings keep working.
+
+## 2. Architecture
 
 ```mermaid
 flowchart LR
-    subgraph clients[Client nodes]
-        CLI[CLI client<br/>ticket_booking.client]
-        UI[Streamlit UI<br/>ui/app.py]
-        ST[Stress client<br/>scripts/stress_m2.py]
+    subgraph clients[Client node]
+        CLI[CLI client]
+        UI[Streamlit web UI]
+        ST[Stress / load client]
     end
-    subgraph raft[Raft application nodes]
-        N1[node-1<br/>ClientService + RaftService<br/>raft.db]
-        N2[node-2<br/>ClientService + RaftService<br/>raft.db]
-        N3[node-3<br/>ClientService + RaftService<br/>raft.db]
+    subgraph raft[Application nodes - Raft cluster]
+        N1[node-1<br/>ClientService + RaftService<br/>SQLite raft.db]
+        N2[node-2<br/>ClientService + RaftService<br/>SQLite raft.db]
+        N3[node-3<br/>ClientService + RaftService<br/>SQLite raft.db]
     end
-    LLM[LLM node<br/>LLMService.GetLLMAnswer]
-    OL[(Ollama model runtime<br/>HTTP adapter)]
+    LLM[LLM server<br/>LLMService.GetLLMAnswer]
+    OL[(Ollama model runtime)]
     CLI -- gRPC --> N1 & N2 & N3
     UI -- gRPC --> N1 & N2 & N3
     ST -- gRPC --> N1 & N2 & N3
@@ -345,208 +64,213 @@ flowchart LR
     N2 <-- gRPC --> N3
     N1 <-- gRPC --> N3
     N1 & N2 & N3 -- "gRPC GetLLMAnswer" --> LLM
-    LLM -- "HTTP /api/generate" --> OL
+    LLM -- "local HTTP" --> OL
 ```
 
-Every hop between project services is gRPC. The one non-gRPC hop is inside the LLM node:
-`llm_service.py` calls the Ollama model runtime over its local HTTP API. Ollama is treated as
-the model-runtime adapter of the LLM server, not as a separate project service.
-
-Booking and failover sequence:
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant F as Follower
-    participant L as Leader (term T)
-    participant P as Other follower
-    C->>F: Post BOOK_SEAT(token, request_id)
-    F-->>C: NOT_LEADER, redirect_to = leader
-    C->>L: Post BOOK_SEAT(token, request_id)
-    L->>L: validate token, check request_id, mock-payment check, append entry
-    par replicate
-        L->>F: AppendEntries(entry)
-        L->>P: AppendEntries(entry)
-    end
-    F-->>L: success, matchIndex
-    L->>L: majority -> commit -> apply (seat BOOKED, charge recorded once)
-    L-->>C: OK, booking_id
-    Note over L: leader crashes
-    F->>F: election timeout, term T+1
-    F->>P: RequestVote(T+1, lastLogIndex, lastLogTerm)
-    P-->>F: vote granted (F's log is at least as up to date)
-    Note over F: new leader; commits a NOOP in T+1 on first read
-    C->>F: Get SEATS (retry after UNAVAILABLE)
-    F->>P: heartbeat round (ReadIndex confirmation)
-    P-->>F: ack in term T+1
-    F-->>C: seat BOOKED (read-after-write holds)
-```
-
-
-## 12. Consistency Semantics
-
-| operation | guarantee | mechanism |
+| node (assignment demo setup) | in this project | port |
 |---|---|---|
-| `Post BOOK_SEAT` / `CANCEL_SEAT`, signup, login session, logout | linearizable; acknowledged only after a majority commit | leader appends to the Raft log, replies after commit + apply (`RaftNode.propose`) |
-| `Get SHOWS`, `SEATS`, `MY_BOOKINGS`, `QUOTE`, `BOOKING_ANALYTICS`, `FAQ` | linearizable | followers forward to the leader; the leader runs `RaftNode.read_barrier()` (commits a NOOP in its term if needed, confirms leadership with a majority heartbeat round started after recording the read index, waits until applied) |
-| `Get CLUSTER_STATUS` | local, per node, not linearizable (diagnostic) | answered by the node that received it |
-| retries with the same `request_id` | at most one booking and one logical charge | request-ID dedup in the log (`propose`), in the state machine (`SeatMap`), and in `Payments.apply_charge` |
-| no majority | writes are not acknowledged (`NO_QUORUM`/`UNAVAILABLE`), reads are refused (`NO_QUORUM`) | commit and read barrier both require a majority |
-| LLM answers | read-only text; never parsed or applied to state | FAQ is a `Get`; nothing returned by the LLM reaches `propose` |
+| Node 1: AI/LLM server | `llm` (`ticket_booking.llm_service`) | 50055 |
+| Node 2: application server, Raft leader | whichever of `app-1/2/3` wins the election | 50051-50053 |
+| Node 3: application server, Raft follower | another `app-N` | 50051-50053 |
+| Node 4: additional Raft follower | the third `app-N` | 50051-50053 |
+| Node 5: client node(s) | `ui` (Streamlit), CLI, stress client | 8501 (UI) |
 
-An uncommitted entry left on a leader that lost its majority may still commit later when the
-majority returns (standard Raft); a client that retries with the same `request_id` receives the
-same single outcome.
+gRPC services (`src/proto/ticket_booking.proto`):
 
+| service | RPCs | used by |
+|---|---|---|
+| `ClientService` | `Login`, `Signup`, `Logout`, `Post(token, type, data, request_id)`, `Get(token, type, params)` | clients -> app nodes, follower -> leader forwarding |
+| `RaftService` | `RequestVote(from, to, term, last_log_index, last_log_term)`, `AppendEntries(from, to, term, prev_index, prev_term, commit_index, entries)` | app node <-> app node |
+| `LLMService` | `GetLLMAnswer(request_id, query, context)` | app node -> LLM server |
 
-## 13. Docker
+Source layout:
 
-Topology: one image `ticket-booking:m2`; services `llm`, `app-1`, `app-2`, `app-3`, `ui`
-(plus optional `ollama`, `ollama-pull` under the `ollama` profile). Distinct node IDs and
-named volumes `node-1-data`..`node-3-data`; static peer list using compose service names;
-health checks on every service; the UI has no volumes and no Docker socket. Raft nodes do
-not wait for the LLM. Verified run: [docs/docker-verification.md](docs/docker-verification.md).
+```
+docker-compose.yml          5-service topology (+ optional containerised Ollama)
+src/proto/                  ticket_booking.proto
+src/ticket_booking/
+  server.py                 ClientService, read/write routing, FAQ boundary
+  raft_node.py              Raft: election, replication, commit, read barrier
+  raft_storage.py           durable term/vote/log/commit index (SQLite)
+  raft_service.py           RaftService gRPC adapter
+  application.py            business layer: validation, pricing, Raft commands
+  state_machine.py          seat map, bookings, per-seat locks, idempotency
+  auth.py                   PBKDF2 passwords, hashed session tokens
+  payment.py                mock payments and refunds
+  llm_service.py            LLM gRPC server (FAQ retrieval + Ollama)
+  faq_data.py, seed.py      FAQ retrieval, domain check, SQLite catalogue
+  client.py                 gRPC client library + CLI
+  healthcheck.py            container health probes
+  stress_test_clients.py    basic race / idempotency load script
+src/ui/                     Streamlit UI (gRPC client only)
+src/scripts/                proto generation, stress test, Docker/UI verification
+src/tests/                  unit, integration, Raft, fault-injection, UI tests
+```
 
-Run from the repository root.
+## 3. System design choices
 
-Build and start (choose how the LLM node reaches a model runtime):
+| choice | why |
+|---|---|
+| Raft (leader-based consensus) | One leader orders every booking, so two clients can never both win a seat; a majority quorum tolerates one failed node out of three. |
+| Writes acknowledged only after majority commit | A booking the client was told about can never be lost by a crash. |
+| Linearizable reads via a ReadIndex barrier | A leader cut off from the others could otherwise show a stale seat map; it must reconfirm leadership with a majority before answering. |
+| Followers redirect writes, forward reads | Clients may contact any node; correctness does not depend on knowing the leader. |
+| Request IDs on every write, deduplicated in the log, the seat map and the payment ledger | Clients can safely retry after a timeout or failover without double booking or double charging. |
+| Deterministic state machine (payment decision made before the entry is logged) | Every node applies the same entries and ends in the same state; nodes never call a payment provider independently. |
+| SQLite per node, `synchronous=FULL` | Term, vote and log survive crashes; simple, embedded, no extra server. |
+| Per-seat locks taken in sorted order | Multi-seat bookings are atomic and deadlock-free. |
+| Server-side pricing | The server charges `price x seats`; the client cannot set the price. |
+| LLM on a separate gRPC server; its output is read-only text | Meets the "separate LLM server" requirement; a model answer can never change bookings or payments. |
+| Booking keeps working when the LLM is down | The chatbot is not on the critical path. |
+| Docker Compose, one image for all services, named volumes | Reproducible 5-node demo; data survives restarts. |
+| Streamlit UI that only uses the gRPC client | The UI is just another client; it cannot bypass consensus. |
+
+## 4. Features
+
+- Sign up, log in, log out; salted PBKDF2 password hashes; expiring session tokens (only token
+  hashes are replicated).
+- Browse 8 seeded shows with 50 seats each; live, linearizable seat availability.
+- Book 1-5 seats atomically; server-side price quote; mock card that approves or declines.
+- My Bookings with charge status; cancel with automatic refund; owner checks (a user cannot
+  see or cancel someone else's booking).
+- Idempotent retries via request IDs.
+- **Raft consensus proof** (novelty): every booking reply carries a receipt from the leader
+  (leader, term, log index, commit index, last applied, committed, replayed). The web UI shows it
+  as a booking-lifecycle panel; the CLI prints it after `--action book`.
+- Raft: leader election, log replication, majority commit, persistence, crash recovery,
+  follower catch-up, linearizable reads, no-quorum safety.
+- Context-aware FAQ chatbot on a separate LLM server: FAQ retrieval + live seat map, off-topic
+  questions rejected, labelled fallback when the model is unavailable.
+- Streamlit web UI with three views: **Booking**, **Cluster Observatory** (live role, term,
+  log, commit index, replication lag, state digest per node) and **Demo Lab** (concurrent seat
+  race, same-key retry, measured leader failover, no-quorum scenario, timeline, downloadable
+  summary).
+- Command-line client for every operation.
+- Stress test with leader failure and invariant checks.
+- Docker Compose topology with health checks and persistent volumes.
+- Automated tests: unit, gRPC integration, Raft cluster, RPC fault injection (delayed,
+  dropped, duplicated, reordered messages), election churn, UI.
+
+## 5. Setup and run
+
+### Requirements
+
+- Windows, macOS or Linux; Python 3.13; Git
+- Docker Desktop (for the 5-node topology)
+- Ollama with the model `llama3.2:1b` (`ollama pull llama3.2:1b`), or use the containerised
+  Ollama option below
+
+### Option A: Docker Compose (recommended)
+
+From the repository root:
 
 ```bash
 docker compose build
 ```
 
 ```bash
-OLLAMA_URL=http://host.docker.internal:11434/api/generate docker compose up -d
+docker compose up -d
 ```
+
+The `llm` service finds Ollama on the host automatically (and falls back to the optional
+`ollama` container), so no environment variable is needed.
+Without host Ollama, run Ollama in a container instead (the first start downloads the Ollama
+image, several GB, and the ~1.3 GB model):
 
 ```bash
 docker compose --profile ollama up -d
 ```
 
-The first form uses Ollama installed on the host (`ollama pull llama3.2:1b` first); the second
-runs Ollama in a container and pulls the model on first start. With neither, FAQ replies are
-labelled fallbacks (verbatim FAQ text). In PowerShell set the variable first:
-`$env:OLLAMA_URL="http://host.docker.internal:11434/api/generate"; docker compose up -d`.
-
-Status and logs:
+Check status, then open the UI at http://127.0.0.1:8501:
 
 ```bash
 docker compose ps
 ```
 
+Useful commands:
+
+| purpose | command |
+|---|---|
+| logs | `docker compose logs -f app-1 app-2 app-3` |
+| which node is leader | `python -m ticket_booking.client --server 127.0.0.1:50051 --action status` (repeat for 50052, 50053) or the UI's Cluster Observatory |
+| kill / restart a node | `docker compose stop app-2` / `docker compose start app-2` |
+| stop, keep data | `docker compose down` |
+| stop and **delete all data** | `docker compose down -v` |
+
+Seeded demo accounts: `alice` / `wonderland`, `bob` / `builder`, `user1`..`user32` /
+`pass1`..`pass32`. Mock cards: `4242424242424242` approves; any number starting or ending in
+`0000` (e.g. `4000000000000000`) is declined.
+
+### Option B: local processes
+
+From `src`:
+
 ```bash
-docker compose logs -f app-1 app-2 app-3
+python -m venv .venv
 ```
 
-Identify the leader (host CLI, from `src` with the venv active; repeat for ports 50052 and
-50053, or open the UI's Cluster Observatory at http://127.0.0.1:8501):
+Activate it (`.\.venv\Scripts\Activate.ps1` on Windows, `source .venv/bin/activate` elsewhere), then:
 
 ```bash
-python -m ticket_booking.client --server 127.0.0.1:50051 --action status
-```
-
-Leader stop and restart (replace `app-2` with the leader's service):
-
-```bash
-docker compose stop app-2
-```
-
-```bash
-docker compose start app-2
-```
-
-No-quorum demo: stop two app services, try a booking (it is not acknowledged and reads return
-`NO_QUORUM`), start them again and retry with the same request ID (UI Demo Lab, step 4):
-
-```bash
-docker compose stop app-1 app-3
-```
-
-```bash
-docker compose start app-1 app-3
-```
-
-Stop while keeping data, or reset everything:
-
-```bash
-docker compose down
+python -m pip install -r requirements.txt
 ```
 
 ```bash
-docker compose down -v
-```
-
-`down` keeps the Raft volumes, so the next `up` replays the committed logs. `down -v` is
-destructive: it deletes all Raft logs, bookings and sessions.
-
-Automated Docker verification and stress test (repository root, cluster running):
-
-```bash
-src/.venv/Scripts/python.exe src/scripts/verify_docker.py
+python scripts/generate_proto.py
 ```
 
 ```bash
-src/.venv/Scripts/python.exe src/scripts/stress_m2.py --duration 30 --workers 12 --failover docker
+python -c "import nltk; nltk.download('stopwords')"
+```
+
+Start the LLM server and three Raft nodes, each in its own terminal:
+
+```bash
+python -m ticket_booking.llm_service
 ```
 
 ```bash
-src/.venv/Scripts/python.exe src/scripts/verify_ui_docker.py
+python -m ticket_booking.server --node-id node-1 --peers node-1=127.0.0.1:50051,node-2=127.0.0.1:50052,node-3=127.0.0.1:50053 --data-dir data/node-1
 ```
 
-`verify_docker.py` stops/starts containers and runs `docker compose down` + `up -d` (volumes kept).
-`verify_ui_docker.py` drives every Streamlit view headlessly (`AppTest`) against the running
-cluster over gRPC, stopping/starting app and LLM containers for the failure flows.
+```bash
+python -m ticket_booking.server --node-id node-2 --peers node-1=127.0.0.1:50051,node-2=127.0.0.1:50052,node-3=127.0.0.1:50053 --data-dir data/node-2
+```
 
+```bash
+python -m ticket_booking.server --node-id node-3 --peers node-1=127.0.0.1:50051,node-2=127.0.0.1:50052,node-3=127.0.0.1:50053 --data-dir data/node-3
+```
 
-## 14. Web UI (Streamlit, gRPC client only)
-
-The UI imports only `ticket_booking.client.Client`; it has no database access, no server-side
-imports, no shell or Docker access.
-
-- **Booking**: login/signup, show picker, labelled seat grid (booked seats disabled), up to 5
-  seats, server-side quote (`Get QUOTE`), mock card that approves or declines, confirmation with
-  booking and request IDs, My Bookings with charge count, cancellation + refund, FAQ chat that
-  labels answers as LLM-generated, fallback (verbatim FAQ text) or out-of-domain and shows the
-  supporting context and correlation ID. Loading spinners, disconnected/no-quorum/no-leader
-  messages, and a STALE banner when a live read fails and the last confirmed seat map is shown.
-- **Cluster Observatory**: one `CLUSTER_STATUS` RPC per node: reachability (UNREACHABLE is
-  distinct from follower), role, term, leader, log length, commit/applied index, commit lag and
-  leader matchIndex, committed-log digest and state digest, plus a sampled lag chart.
-- **Demo Lab** (novelty): concurrent seat race, same-key retry, guided leader failure with
-  measured failover time and old-leader catch-up check, guided no-quorum scenario, a
-  timestamped timeline correlated by request ID, invariant checks computed from real responses,
-  and downloadable Markdown/JSON summaries. Node stops are done by the operator in a terminal;
-  the UI shows the exact command.
-
-Local (from `src`, cluster running on 50051-50053; Streamlit is installed by `requirements.txt`):
+Web UI:
 
 ```bash
 python -m streamlit run ui/app.py
 ```
 
-Docker: http://127.0.0.1:8501.
+A single non-replicated server (`python -m ticket_booking.server`) is still supported for
+simple testing.
 
-
-## 15. Failure Demonstrations (local processes)
-
-Start the LLM service and three nodes as in section 5, then from `src`:
+### Command-line client (from `src`)
 
 ```bash
-python -m ticket_booking.client --action book --show-id show-1 --seat-id A10
+python -m ticket_booking.client --action shows
 ```
 
-Stop the leader's terminal (Ctrl+C), then query another node:
+| action | example |
+|---|---|
+| sign up | `--action signup --username charlie --password GoodPass1` |
+| seats | `--action seats --show-id show-1` |
+| book (up to 5) | `--action book --show-id show-1 --seat-id A1,A2,A3` (also prints the Raft receipt) |
+| declined payment | `--action book --show-id show-1 --seat-id A9 --card 4000000000000000` |
+| my bookings | `--action mybookings` |
+| cancel | `--action cancel --booking-id <id>` |
+| FAQ | `--action faq --query "How do I cancel a booking?"` |
+| node status | `--server 127.0.0.1:50052 --action status` |
+| analytics | `--action analytics` |
 
-```bash
-python -m ticket_booking.client --server 127.0.0.1:50052 --action seats --show-id show-1
-```
+Other options: `--server`, `--username`, `--password` (defaults `alice` / `wonderland`).
 
-A10 is still `BOOKED`. Restart the stopped node with its original command and data directory;
-it rejoins as follower and catches up (`--action status` on its port shows the same
-commit index).
-
-
-## 16. Test Suites (Milestone 2 additions)
+### Tests and load scripts
 
 From `src`:
 
@@ -554,69 +278,87 @@ From `src`:
 python -m pytest
 ```
 
+The LLM tests need Ollama running with `llama3.2:1b`. With the Docker cluster running, from
+the repository root:
+
 ```bash
-python -m pytest tests/test_raft_m2.py tests/test_m2_features.py tests/test_ui.py
+python src/scripts/stress_m2.py --duration 30 --workers 12 --failover docker
 ```
 
-- `tests/test_raft_m2.py`: follower commit rule, read barrier, deposed-leader stale-read
-  regression, follower-read forwarding, read-after-write across failover, no-quorum booking with
-  same-ID retry, real gRPC fault injection (delayed / dropped request / dropped response /
-  duplicated / reordered `AppendEntries` and `RequestVote`), booking under election churn.
-- `tests/test_m2_features.py`: LLM correlation IDs, out-of-domain rejection, LLM outage
-  fallback (dead port, runtime abort, not configured), generated text cannot mutate state,
-  My Bookings / Quote / refund, payment decline, client redirect map, status digests.
-- `tests/test_ui.py`: UI import boundary, Observatory and Demo-Lab helpers against a live
-  3-node cluster, headless Streamlit (`AppTest`) runs of all three views.
-- `tests/test_final_quality.py`: server-side pricing, retry with an unnormalized seat list, request-ID index (no log scan, rebuilt on restart, pruned on truncation), FAQ domain gate, CLI `mybookings`/`--card`, cross-user cancellation.
-- `tests/raft_faults.py` is a helper module (fault-injecting gRPC interceptor), not a test file.
+```bash
+python src/scripts/verify_docker.py
+```
 
-The LLM tests in `test_llm.py` and `test_integration.py::test_cancel_faq` still need a running
-Ollama with `llama3.2:1b`.
+```bash
+python src/scripts/verify_ui_docker.py
+```
 
+From `src`, a self-contained end-to-end demo (starts three local nodes, races 10 users for one
+seat, kills the leader, books after failover, restarts the node and checks catch-up):
 
-## 17. Requirement → Implementation → Test → Demo
+```bash
+python scripts/m2_demo.py --skip-faq
+```
 
-| requirement (assignment PDF, option A) | implementation | tests | demo |
-|---|---|---|---|
-| gRPC for all inter-service calls, Python only | `proto/ticket_booking.proto`, `server.py`, `raft_service.py`, `llm_service.py`, `client.py` | `test_proto.py`, `test_integration.py` | every scenario |
-| leader election | `RaftNode._elect`, `request_vote` | `test_raft.py::test_single_leader_election_stays_stable_under_repeated_failover`, `test_raft_m2.py::test_fault_injected_raft_rpcs_keep_safety` (one leader per term) | Observatory; `verify_docker.py` §2, §4 |
-| log replication + majority commit | `append_entries`, `_replicate_peer`, `_advance_commit` | `test_raft.py::test_cluster_commits_same_log_after_write_burst_and_leader_change`, `test_raft_m2.py::test_follower_commit_is_bounded_by_last_new_entry` | log/state digests in Observatory |
-| failure detection & recovery, demo after leader kill | election timeout, persisted term/vote/log, replay on start | `test_raft.py::test_cluster_election_replication_failure_and_catchup`, `test_raft_m2.py::test_read_after_write_survives_leader_failover`, `test_concurrent_booking_during_election_churn` | Demo Lab step 3; `verify_docker.py` §4-5 |
-| strong consistency for critical operations | majority commit for writes; `read_barrier` for reads | `test_raft_m2.py::test_partitioned_old_leader_does_not_serve_stale_seat_map`, `test_no_quorum_booking_has_no_side_effects_and_retry_is_idempotent` | Demo Lab step 4; `verify_docker.py` §6 |
-| overbooking prevention | per-seat ordered locks + Raft-ordered apply + request-ID dedup | `test_booking.py`, `test_raft.py`, `test_raft_m2.py` churn/fault tests | Demo Lab steps 1-2; stress race |
-| mock payment, decline, refund | `payment.py`, `application.raft_post/apply_raft` | `test_payment.py`, `test_m2_features.py::test_payment_decline_creates_no_booking_or_charge`, `test_my_bookings_quote_and_refund` | Booking view |
-| LLM FAQ on a separate server, context aware | `llm_service.py`, `AppServer._faq` (FAQ retrieval + live seat map) | `test_llm.py`, `test_m2_features.py` LLM tests | Booking view FAQ; `verify_docker.py` §7 |
-| web UI (Booking, Cluster Observatory, Demo Lab), gRPC only | `ui/app.py`, `ui/cluster.py` | `test_ui.py` (8 tests incl. headless AppTest) | `scripts/verify_ui_docker.py`; http://127.0.0.1:8501 |
-| stress testing | `scripts/stress_m2.py` | churn + fault-injection tests | [docs/stress-test-report.md](docs/stress-test-report.md) |
-| 4-5 node demo setup | `docker-compose.yml` (LLM, 3 Raft nodes, UI client) | `verify_docker.py` | [docs/docker-verification.md](docs/docker-verification.md) |
+From `src`, the basic race/idempotency script:
 
+```bash
+python -m ticket_booking.stress_test_clients --server 127.0.0.1:50051 --race-workers 15
+```
 
-## 18. Security Notes, Limitations, Attribution
+### Code style
 
-Security notes:
+Formatting and linting use Ruff, configured in `src/pyproject.toml` (line length 120,
+generated protobuf code excluded). From `src`, with Ruff installed (`pip install ruff`):
 
-- Passwords are stored as salted PBKDF2-SHA256; session tokens are random 32-byte values and
-  only their SHA-256 hash is replicated through Raft.
-- The LLM request ID is a fresh correlation ID (`faq-<uuid>`), never the session token; the
-  LLM receives only the question and grounding context.
-- Payments are mock only. The UI offers two labelled mock cards; no real card data is used.
-- gRPC is plaintext and unauthenticated between nodes; ports are bound to 127.0.0.1 in compose.
-  Do not expose them on an untrusted network.
-- `CLUSTER_STATUS` requires a valid session and returns only Raft metadata and digests.
+```bash
+ruff format .
+```
 
-Known limitations:
+```bash
+ruff check .
+```
 
-- No log compaction or snapshots; the log and the in-memory request-ID index grow with every
-  write (lookups are O(1); startup replays the whole log).
-- No membership changes; the peer list is static.
-- No leader lease / check-quorum: an isolated leader keeps its role until it hears a higher
-  term, but it can neither commit writes nor serve reads (read barrier).
-- `CLUSTER_STATUS` is node-local and may lag; the FAQ domain gate is a fixed vocabulary plus FAQ retrieval, so an off-topic question that uses a booking word ("show me a joke") can still reach the model, which is instructed to answer only from the FAQ context.
-- Seeded demo accounts (`alice`/`wonderland`, ...) exist on every node for demonstration.
+## 6. Team contributions
 
-Attribution: Raft follows Ongaro and Ousterhout, "In Search of an Understandable Consensus
-Algorithm (Extended Version)"; the read barrier is the ReadIndex approach from section 8 of
-that paper. Third-party software: gRPC/protobuf, SQLite, NLTK stopwords, Ollama with
-`llama3.2:1b`, Streamlit. Milestone 2 hardening, tests, UI and documentation were developed
-with assistance from an AI coding assistant (Claude); see the reflection template for
-individual contributions.
+All three members contributed equally to design, implementation, testing, debugging,
+deployment and documentation across the whole project.
+
+**Pratham Soneja**
+- Seat-allocation state machine: per-seat locking, atomic multi-seat bookings, request-ID
+  idempotency.
+- Raft core: leader election, log replication, majority commit and the linearizable read
+  barrier.
+- gRPC client library and command-line client, including leader redirection and retries.
+- Raft correctness tests, including RPC fault injection and election-churn tests.
+
+**Rathul Krishnan**
+- gRPC application server: request routing, follower forwarding and session handling across
+  nodes.
+- Raft persistence and recovery: SQLite storage of term, vote and log, replay on restart,
+  follower catch-up.
+- Docker Compose deployment: one image, health checks, named volumes, 5-node topology.
+- Integration tests, the stress-testing tool and the Docker verification workflow.
+
+**Mitali Narayan**
+- Separate LLM server: gRPC `LLMService`, Ollama integration, FAQ retrieval with NLTK, domain
+  check and safe fallback.
+- SQLite catalogue and seed data for shows and FAQs; mock payment, pricing and refund
+  handling.
+- Streamlit web UI: Booking view, Cluster Observatory and Demo Lab.
+- Raft consensus proof novelty: commit receipt from the leader, booking-lifecycle panel in the
+  UI, and the end-to-end demo script `src/scripts/m2_demo.py`.
+- LLM, payment and UI tests, and the UI verification workflow.
+
+## 7. Security notes and limitations
+
+- Passwords: salted PBKDF2-SHA256. Session tokens are random; only their SHA-256 hash is
+  stored and replicated. LLM requests carry a fresh correlation ID, never the session token.
+- Payments are mock only; no real card data is used.
+- gRPC runs without TLS and is bound to 127.0.0.1 in Compose; do not expose it publicly.
+- Limitations: no log compaction or snapshots, fixed cluster membership (3 nodes), no leader
+  lease (an isolated leader keeps its role but cannot commit or serve reads), and the chatbot's
+  topic filter is vocabulary based.
+
+Reference: D. Ongaro and J. Ousterhout, "In Search of an Understandable Consensus Algorithm
+(Extended Version)".

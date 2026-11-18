@@ -21,5 +21,3 @@ def test_proto_import() -> None:
     assert hasattr(ticket_booking_pb2_grpc, "ClientServiceServicer")
     assert hasattr(ticket_booking_pb2_grpc, "RaftServiceServicer")
     assert hasattr(ticket_booking_pb2_grpc, "LLMServiceServicer")
-
-

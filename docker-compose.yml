@@ -5,10 +5,13 @@
 #   docker compose down                 stop + remove containers, KEEP Raft volumes
 #   docker compose down -v              DESTRUCTIVE: also deletes all Raft logs/state
 #
-# LLM model runtime (Ollama) options -- see README section "Docker":
-#   * host Ollama:       OLLAMA_URL=http://host.docker.internal:11434/api/generate docker compose up -d
+# LLM model runtime (Ollama) -- see README section "Docker". The llm service tries, in order,
+# Ollama on the host (host.docker.internal:11434) and the optional ollama container, so no
+# environment variable is needed:
+#   * host Ollama:       docker compose up -d
 #   * containerised:     docker compose --profile ollama up -d   (pulls the model on first start)
 #   * neither:           FAQ answers fall back to verbatim FAQ text, labelled as not AI-generated.
+# Set OLLAMA_URL (comma-separated list allowed) only to point somewhere else.
 
 x-image: &image
   image: ticket-booking:m2
@@ -32,7 +35,7 @@ services:
     <<: *image
     command: ["python", "-m", "ticket_booking.llm_service"]
     environment:
-      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434/api/generate}
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434/api/generate,http://ollama:11434/api/generate}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:1b}
     extra_hosts:
       - "host.docker.internal:host-gateway"

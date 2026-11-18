@@ -55,7 +55,9 @@ DB_PATH = Path(__file__).resolve().parent / "catalog.db"
 catalog = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
 catalog.execute("PRAGMA journal_mode=WAL")
 catalog.execute("CREATE TABLE IF NOT EXISTS shows (show_id TEXT PRIMARY KEY, name TEXT, venue TEXT, start_time TEXT)")
-catalog.execute("CREATE TABLE IF NOT EXISTS faq (topic_key TEXT PRIMARY KEY, display_title TEXT, trigger_words TEXT, body_text TEXT)")
+catalog.execute(
+    "CREATE TABLE IF NOT EXISTS faq (topic_key TEXT PRIMARY KEY, display_title TEXT, trigger_words TEXT, body_text TEXT)"
+)
 catalog.execute("CREATE INDEX IF NOT EXISTS idx_shows_name ON shows(name)")
 catalog.execute("CREATE INDEX IF NOT EXISTS idx_faq_title ON faq(display_title)")
 if catalog.execute("SELECT COUNT(*) FROM shows").fetchone()[0] == 0:

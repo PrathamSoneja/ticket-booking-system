@@ -1,27 +1,18 @@
 import argparse
 import json
-import sys
 import time
-from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import grpc
 
-GEN = Path(__file__).resolve().parent / "generated"
-if str(GEN) not in sys.path:
-    sys.path.insert(0, str(GEN))
-
-import ticket_booking_pb2 as pb
-import ticket_booking_pb2_grpc as pb_grpc
+from ticket_booking.generated import ticket_booking_pb2 as pb
+from ticket_booking.generated import ticket_booking_pb2_grpc as pb_grpc
 
 
 class Client:
     def __init__(self, addr="127.0.0.1:50051", timeout=3.0, max_retries=3, backoff=0.25, redirect_map=None):
-        if isinstance(addr, (list, tuple, set)):
-            seeds = [str(x) for x in addr if str(x).strip()]
-        else:
-            seeds = [str(addr)]
+        seeds = [str(x) for x in addr if str(x).strip()] if isinstance(addr, (list, tuple, set)) else [str(addr)]
         self.seed_addresses = seeds or ["127.0.0.1:50051"]
         self.addr = self.seed_addresses[0]
         self.timeout = timeout
@@ -32,6 +23,7 @@ class Client:
         self.redirect_map = dict(redirect_map or {})
         self.token = None
         self.user = None
+        self.last_booking_receipt = None
         self.channel = grpc.insecure_channel(self.addr)
         self.stub = pb_grpc.ClientServiceStub(self.channel)
 
@@ -52,11 +44,11 @@ class Client:
         return self.seed_addresses[(idx + 1) % len(self.seed_addresses)]
 
     @staticmethod
-    def _rpc_failed_response(method_name, err):
+    def _rpc_failed_response(err):
         details = getattr(err, "details", lambda: str(err))()
         return SimpleNamespace(
             status="UNAVAILABLE",
-            message=f"{method_name} failed: {details}",
+            message=details,
             token="",
             items=[],
             redirect_to="",
@@ -76,8 +68,8 @@ class Client:
                         time.sleep(self.backoff * attempts)
                         self._switch_server(self._next_seed())
                         continue
-                    return self._rpc_failed_response(method_name, err)
-                return self._rpc_failed_response(method_name, err)
+                    return self._rpc_failed_response(err)
+                return self._rpc_failed_response(err)
             if res.status == "NO_LEADER" and attempts < self.max_retries:
                 # cluster is electing; back off and try another seed
                 attempts += 1
@@ -91,7 +83,14 @@ class Client:
                     time.sleep(self.backoff * attempts)
                     continue
             return res
-        return SimpleNamespace(status="UNAVAILABLE", message=f"{method_name} failed: request timed out.", token="", items=[], redirect_to="", booking_id="")
+        return SimpleNamespace(
+            status="UNAVAILABLE",
+            message="Request timed out.",
+            token="",
+            items=[],
+            redirect_to="",
+            booking_id="",
+        )
 
     def close(self):
         if self.channel:
@@ -122,6 +121,7 @@ class Client:
         if res.status == "OK":
             self.token = None
             self.user = None
+            self.last_booking_receipt = None
             return True, "Logout successful."
         else:
             return False, f"Logout failed: {res.message}"
@@ -129,7 +129,9 @@ class Client:
     def get_shows(self):
         if not self.token:
             return "AUTH_FAILED", [], "Please log in first."
-        res = self._call_with_retry("Get", pb.GetRequest(token=self.token, type="SHOWS", params=json.dumps({}).encode()))
+        res = self._call_with_retry(
+            "Get", pb.GetRequest(token=self.token, type="SHOWS", params=json.dumps({}).encode())
+        )
         items = [json.loads(it.data.decode()) for it in res.items]
         return res.status, items, res.message
 
@@ -201,6 +203,7 @@ class Client:
         return res.status, res.message, support
 
     def _post(self, kind, body, req_id, hops):
+        self.last_booking_receipt = None
         if not self.token:
             return "AUTH_FAILED", "", "Please log in first."
         rid = req_id or str(uuid4())
@@ -221,7 +224,15 @@ class Client:
                     continue
                 raise
             if res.status != "NOT_LEADER" or not res.redirect_to:
-                return res.status, res.booking_id, res.message
+                message = res.message
+                try:
+                    envelope = json.loads(message)
+                    if isinstance(envelope, dict) and envelope.get("_booking_receipt_v1"):
+                        self.last_booking_receipt = envelope.get("receipt")
+                        message = envelope.get("message", message)
+                except (TypeError, ValueError):
+                    pass
+                return res.status, res.booking_id, message
             self._switch_server(res.redirect_to)
             n = n + 1
         return "REDIRECT_FAILED", "", "Exceeded maximum redirect hops to reach cluster leader."
@@ -237,7 +248,7 @@ class Client:
 
     def ask_faq(self, query, context="", show_id=""):
         if not self.token:
-            return f"FAQ failed (AUTH_FAILED): Please log in first."
+            return "FAQ failed (AUTH_FAILED): Please log in first."
         res = self._call_with_retry(
             "Get",
             pb.GetRequest(
@@ -271,10 +282,10 @@ def main():
     c = Client(args.server)
     if args.action == "signup":
         ok, msg = c.signup(args.username, args.password)
-        print(msg)
         c.close()
         if not ok:
             raise SystemExit(msg)
+        print(msg)
         return
     ok, msg = c.login(args.username, args.password)
     if not ok:
@@ -285,6 +296,8 @@ def main():
         print(c.get_seats(args.show_id))
     elif args.action == "book":
         print(c.book_seat(args.show_id, args.seat_id, card=args.card))
+        if c.last_booking_receipt:
+            print("Raft receipt:", c.last_booking_receipt)
     elif args.action == "cancel":
         print(c.cancel_seat(args.booking_id))
     elif args.action == "mybookings":

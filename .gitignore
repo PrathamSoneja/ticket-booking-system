@@ -9,3 +9,7 @@ src/ticket_booking/catalog.db-wal
 src/ticket_booking/catalog.db-shm
 .data/
 temp.py
+src/scripts/m2_demo_logs/
+docs/Demo_Recording_Steps.md
+docs/Project_Explanation.md
+docs/Presentation_Script.md

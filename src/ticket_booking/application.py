@@ -1,5 +1,6 @@
 import json
 import math
+from dataclasses import replace
 from hashlib import sha256
 from uuid import NAMESPACE_URL, uuid5
 
@@ -30,7 +31,7 @@ class BookingApp:
         return self.auth.signup(uname, pw)
 
     def logout(self, tok):
-        if self.auth.logout(tok) == True:
+        if self.auth.logout(tok) is True:
             return Outcome("OK", "Logged out.")
         else:
             return Outcome("AUTH_FAILED", "Invalid or expired session.")
@@ -39,7 +40,7 @@ class BookingApp:
         user = self.auth.token_user(tok)
         if user is None:
             return "AUTH_FAILED", [], "A valid session token is required."
-        if params == None:
+        if params is None:
             params = {}
         if kind == "SHOWS":
             return "OK", self.seats.shows(), ""
@@ -56,7 +57,9 @@ class BookingApp:
         if kind == "MY_BOOKINGS":
             rows = self.seats.user_bookings(user)
             for row in rows:
-                row.update(self.pay.txn_summary(row["txn"]) if row["txn"] else {"charges": 0, "amount": 0.0, "refunded": False})
+                row.update(
+                    self.pay.txn_summary(row["txn"]) if row["txn"] else {"charges": 0, "amount": 0.0, "refunded": False}
+                )
             return "OK", rows, ""
         if kind == "QUOTE":
             show_id = params.get("show_id", "")
@@ -86,7 +89,7 @@ class BookingApp:
         return h.hexdigest()[:16]
 
     def faq_context(self, query, params=None):
-        if params == None:
+        if params is None:
             params = {}
         bits = []
         extra = params.get("context", "")
@@ -106,10 +109,7 @@ class BookingApp:
                     if s["status"] == "AVAILABLE":
                         free.append(s["seat_id"])
                 booked = len(lst) - len(free)
-                if free:
-                    free_str = ", ".join(free)
-                else:
-                    free_str = "none"
+                free_str = ", ".join(free) if free else "none"
                 bits.append(
                     f"Live committed seat map for {show_id}: {len(free)} available, {booked} booked. AVAILABLE seats: {free_str}."
                 )
@@ -162,8 +162,10 @@ class BookingApp:
         user = self.auth.token_user(tok)
         if user is None:
             return Outcome("AUTH_FAILED", "A valid session token is required.")
+
         if not req_id:
             return Outcome("INVALID_REQUEST", "A request_id is required for Raft writes.")
+
         if kind == "BOOK_SEAT":
             seats = parse_seats(data.get("seat_id", ""))
             payload = {"show_id": data.get("show_id", ""), "seat_id": ",".join(seats)}
@@ -171,14 +173,34 @@ class BookingApp:
             payload = {"booking_id": data.get("booking_id", "")}
         else:
             return Outcome("INVALID_REQUEST", "Unsupported post request type.")
+
         already = self.seats.result(req_id, user, kind, payload)
+
         if already:
+            idx = raft.req_index.get(req_id)
+            row = raft.store.entry_at(idx) if idx is not None else None
+
+            if row and idx <= raft.commit_index and idx <= raft.last_applied:
+                return replace(
+                    already,
+                    raft_leader=raft.node_id,
+                    raft_term=row[1],
+                    raft_log_index=idx,
+                    raft_commit_index=raft.commit_index,
+                    raft_last_applied=raft.last_applied,
+                    raft_committed=True,
+                    request_replayed=True,
+                )
+
             return already
+
         body = {"user_id": user, **payload}
+
         if kind == "BOOK_SEAT":
             err, due = self._price(data, seats)
             if err:
                 return err
+
             check = self.pay.check(due, data.get("card_number", "4242424242424242"))
             body.update(
                 amount=due,
@@ -186,10 +208,26 @@ class BookingApp:
                 pay_status=check.status,
                 pay_message=check.message,
             )
-        status, out = raft.propose(kind, json.dumps(body, separators=(",", ":")).encode(), req_id)
+
+        status, out, proof = raft.propose(
+            kind,
+            json.dumps(body, separators=(",", ":")).encode(),
+            req_id,
+            return_metadata=True,
+        )
+
         if status != "OK":
             return Outcome(status, "The request could not be committed by a Raft majority.")
-        return out
+
+        return replace(
+            out,
+            raft_leader=proof["leader"],
+            raft_term=proof["term"],
+            raft_log_index=proof["log_index"],
+            raft_commit_index=proof["commit_index"],
+            raft_last_applied=proof["last_applied"],
+            raft_committed=proof["committed"],
+        )
 
     def apply_raft(self, kind, payload, req_id):
         if kind == "NOOP":
@@ -208,6 +246,7 @@ class BookingApp:
             self.auth.revoke_hash(body["token_hash"])
             return Outcome("OK", "Session revoked.")
         if kind == "BOOK_SEAT":
+
             def pay():
                 if body["pay_status"] != "SUCCESS":
                     return body["pay_status"], body["pay_message"], ""

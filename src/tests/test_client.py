@@ -1,17 +1,11 @@
-import sys
 from concurrent import futures
-from pathlib import Path
 
 import grpc
 import pytest
 
-GEN = Path(__file__).resolve().parents[1] / "ticket_booking" / "generated"
-if str(GEN) not in sys.path:
-    sys.path.insert(0, str(GEN))
-
-import ticket_booking_pb2_grpc as pb_grpc
 from ticket_booking.application import BookingApp
 from ticket_booking.client import Client
+from ticket_booking.generated import ticket_booking_pb2_grpc as pb_grpc
 from ticket_booking.server import AppServer
 
 

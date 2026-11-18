@@ -43,7 +43,7 @@ class Auth:
         return None, None
 
     def __init__(self, users=None, lifetime=timedelta(hours=1)):
-        if users == None:
+        if users is None:
             users = {"alice": "wonderland", "bob": "builder"}
             n = 1
             while n <= 32:
@@ -73,7 +73,7 @@ class Auth:
         return compare_digest(expected, check)
 
     def new_session(self, uname, now=None):
-        if now == None:
+        if now is None:
             now = datetime.now(UTC)
         tok = token_urlsafe(32)
         self.lock.acquire()
@@ -146,7 +146,11 @@ class Auth:
                         stored = bytes(self.hashes[name])
                         salt, expected = self._stored_hash(stored)
                         if salt is not None and expected is not None:
-                            return compare_digest(expected, digest[16:]) if len(digest) >= 48 else compare_digest(expected, digest)
+                            return (
+                                compare_digest(expected, digest[16:])
+                                if len(digest) >= 48
+                                else compare_digest(expected, digest)
+                            )
                     return compare_digest(self.hashes[name], digest)
             self.hashes[uname] = digest
             return True
@@ -186,7 +190,7 @@ class Auth:
             sess = self.sessions.get(key)
             if sess is None:
                 return None
-            if now == None:
+            if now is None:
                 now = datetime.now(UTC)
             if sess.expiry <= now:
                 self.sessions.pop(key, None)

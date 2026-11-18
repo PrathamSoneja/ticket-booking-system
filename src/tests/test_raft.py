@@ -1,22 +1,16 @@
 import socket
-import sys
 import time
 from concurrent import futures
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 import grpc
 import pytest
 
-GEN = Path(__file__).resolve().parents[1] / "ticket_booking" / "generated"
-if str(GEN) not in sys.path:
-    sys.path.insert(0, str(GEN))
-
-import ticket_booking_pb2 as pb
-import ticket_booking_pb2_grpc as pb_grpc
 from ticket_booking.application import BookingApp
 from ticket_booking.auth import Auth
 from ticket_booking.client import Client
+from ticket_booking.generated import ticket_booking_pb2 as pb
+from ticket_booking.generated import ticket_booking_pb2_grpc as pb_grpc
 from ticket_booking.raft_node import RaftNode
 from ticket_booking.raft_service import RaftService
 from ticket_booking.server import AppServer
@@ -36,9 +30,7 @@ class LocalNode:
         self.app = BookingApp(auth=Auth({"alice": "wonderland"}))
         self.raft = RaftNode(node_id, peers, path, self.app.apply_raft)
         self.srv = grpc.server(futures.ThreadPoolExecutor(max_workers=12))
-        pb_grpc.add_ClientServiceServicer_to_server(
-            AppServer(app=self.app, raft=self.raft), self.srv
-        )
+        pb_grpc.add_ClientServiceServicer_to_server(AppServer(app=self.app, raft=self.raft), self.srv)
         pb_grpc.add_RaftServiceServicer_to_server(RaftService(self.raft), self.srv)
         assert self.srv.add_insecure_port(addr) > 0
         self.srv.start()
@@ -112,9 +104,7 @@ def test_vote_and_append_rules(tmp_path):
     assert not node.request_vote(other).vote_granted
     stale_node = RaftNode("n4", {"n2": "127.0.0.1:1"}, tmp_path / "stale.db", apply)
     stale_node.store.add_entry(1, 2, "TEST", b"latest", "log-1")
-    stale_log = pb.RequestVoteArgs(
-        **{"from": "n2", "term": 3, "last_log_index": 99, "last_log_term": 1}
-    )
+    stale_log = pb.RequestVoteArgs(**{"from": "n2", "term": 3, "last_log_index": 99, "last_log_term": 1})
     assert not stale_node.request_vote(stale_log).vote_granted
     stale_node.close()
 
@@ -232,7 +222,9 @@ def test_single_leader_election_stays_stable_under_repeated_failover(tmp_path):
 
 
 def test_append_entries_rejects_stale_leader_after_term_bump(tmp_path):
-    apply = lambda cmd, payload, req_id: Outcome("OK", payload.decode())
+    def apply(cmd, payload, req_id):
+        return Outcome("OK", payload.decode())
+
     node = RaftNode("n1", {"n2": "127.0.0.1:1"}, tmp_path / "stale.db", apply)
     node.term = 4
     node.voted_for = "n1"
@@ -362,7 +354,6 @@ def test_follower_rejoin_catches_up_committed_log(tmp_path):
 def test_cluster_commits_same_log_after_write_burst_and_leader_change(cluster):
     leader = wait_leader(cluster)
     assert leader is not None
-    follower_ids = [node_id for node_id in cluster if node_id != leader]
     client = Client([cluster[node_id].addr for node_id in cluster])
     assert client.login("alice", "wonderland")[0]
     ids = []
@@ -373,7 +364,10 @@ def test_cluster_commits_same_log_after_write_burst_and_leader_change(cluster):
     for node_id in cluster:
         log = [row[0:5] for row in cluster[node_id].raft.store.entries_to(cluster[node_id].raft.commit_index)]
         assert log, node_id
-    assert len({tuple(cluster[node_id].raft.store.entries_to(cluster[node_id].raft.commit_index)) for node_id in cluster}) == 1
+    assert (
+        len({tuple(cluster[node_id].raft.store.entries_to(cluster[node_id].raft.commit_index)) for node_id in cluster})
+        == 1
+    )
     client.close()
 
 
@@ -421,10 +415,7 @@ def test_cluster_election_replication_failure_and_catchup(cluster):
     end = time.monotonic() + 2
     while time.monotonic() < end:
         # commit_index is advanced just before entries are applied; wait for both
-        if all(
-            node.raft.commit_index == 2 and node.raft.last_applied == 2
-            for node in cluster.values()
-        ):
+        if all(node.raft.commit_index == 2 and node.raft.last_applied == 2 for node in cluster.values()):
             break
         time.sleep(0.03)
     for node in cluster.values():
@@ -502,9 +493,7 @@ def test_cluster_election_replication_failure_and_catchup(cluster):
     assert restarted.app.seats.grid["show-1"]["A2"].status == "BOOKED"
     assert restarted.app.seats.grid["show-2"]["A1"].status == "BOOKED"
     assert restarted.app.auth.token_user(client.token) == "alice"
-    assert restarted.raft.store.entries_to(restarted.raft.commit_index) == cluster[
-        next_leader
-    ].raft.store.entries_to(
+    assert restarted.raft.store.entries_to(restarted.raft.commit_index) == cluster[next_leader].raft.store.entries_to(
         cluster[next_leader].raft.commit_index
     )
     client.close()

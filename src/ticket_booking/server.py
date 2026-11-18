@@ -2,7 +2,6 @@ import argparse
 import json
 import logging
 import os
-import sys
 from concurrent import futures
 from datetime import UTC, datetime
 from pathlib import Path
@@ -12,14 +11,10 @@ from uuid import uuid4
 
 import grpc
 
-GEN = Path(__file__).resolve().parent / "generated"
-if str(GEN) not in sys.path:
-    sys.path.insert(0, str(GEN))
-
-import ticket_booking_pb2 as pb
-import ticket_booking_pb2_grpc as pb_grpc
 from ticket_booking.application import BookingApp
 from ticket_booking.faq_data import FaqIndex, in_domain
+from ticket_booking.generated import ticket_booking_pb2 as pb
+from ticket_booking.generated import ticket_booking_pb2_grpc as pb_grpc
 from ticket_booking.raft_node import RaftNode
 from ticket_booking.raft_service import RaftService
 
@@ -43,10 +38,7 @@ def _json_object(raw):
 def _is_forwarded(ctx):
     if ctx is None:
         return False
-    for key, _ in ctx.invocation_metadata() or ():
-        if key == FORWARDED_HEADER:
-            return True
-    return False
+    return any(key == FORWARDED_HEADER for key, _ in ctx.invocation_metadata() or ())
 
 
 class AppServer(pb_grpc.ClientServiceServicer):
@@ -117,9 +109,7 @@ class AppServer(pb_grpc.ClientServiceServicer):
                 ).encode()
                 status, _ = self.raft.propose("AUTH_SIGNUP", body, "signup:" + key)
                 if status != "OK":
-                    return pb.LoginResponse(
-                        status=status, message="Signup could not reach a Raft majority."
-                    )
+                    return pb.LoginResponse(status=status, message="Signup could not reach a Raft majority.")
                 return pb.LoginResponse(status="OK", token=tok, message="Account registered.")
         out = self.app.signup(req.username, req.password)
         return pb.LoginResponse(status=out.status, token=out.token, message=out.message)
@@ -134,9 +124,7 @@ class AppServer(pb_grpc.ClientServiceServicer):
             body = json.dumps({"token_hash": key}, separators=(",", ":")).encode()
             status, _ = self.raft.propose("AUTH_LOGOUT", body, "logout:" + key)
             if status != "OK":
-                return pb.StatusResponse(
-                    status=status, message="Logout could not reach a Raft majority."
-                )
+                return pb.StatusResponse(status=status, message="Logout could not reach a Raft majority.")
             return pb.StatusResponse(status="OK", message="Logged out.")
         out = self.app.logout(req.token)
         return pb.StatusResponse(status=out.status, message=out.message)
@@ -158,14 +146,10 @@ class AppServer(pb_grpc.ClientServiceServicer):
             if barrier != "OK":
                 if barrier == "NOT_LEADER":
                     barrier = "NO_LEADER"
-                return pb.GetResponse(
-                    status=barrier, message="Read could not be confirmed by a Raft majority."
-                )
+                return pb.GetResponse(status=barrier, message="Read could not be confirmed by a Raft majority.")
         if req.type == "CLUSTER_STATUS":
             if self.app.auth.token_user(req.token) is None:
-                return pb.GetResponse(
-                    status="AUTH_FAILED", message="A valid session token is required."
-                )
+                return pb.GetResponse(status="AUTH_FAILED", message="A valid session token is required.")
             if self.raft:
                 status = self.raft.status()
                 status["log_digest"] = self.raft.log_digest(status["commit_index"])
@@ -224,7 +208,25 @@ class AppServer(pb_grpc.ClientServiceServicer):
                 )
         else:
             out = self.app.post(req.token, req.type, clean, req.request_id)
-        return pb.StatusResponse(status=out.status, message=out.message, booking_id=out.booking_id)
+        message = out.message
+        if out.raft_log_index:
+            message = json.dumps(
+                {
+                    "_booking_receipt_v1": True,
+                    "message": out.message,
+                    "receipt": {
+                        "leader": out.raft_leader,
+                        "term": out.raft_term,
+                        "log_index": out.raft_log_index,
+                        "commit_index": out.raft_commit_index,
+                        "last_applied": out.raft_last_applied,
+                        "committed": out.raft_committed,
+                        "replayed": out.request_replayed,
+                    },
+                },
+                separators=(",", ":"),
+            )
+        return pb.StatusResponse(status=out.status, message=message, booking_id=out.booking_id)
 
     def _faq(self, params):
         """FAQ boundary. The LLM only ever produces text for this read-only reply: nothing it
@@ -251,8 +253,7 @@ class AppServer(pb_grpc.ClientServiceServicer):
         if not in_domain(q) or (not faq_ids and not live):
             return reply(
                 "OUT_OF_DOMAIN",
-                "I can only answer questions about shows, seats, bookings, payments, "
-                "cancellations and refunds.",
+                "I can only answer questions about shows, seats, bookings, payments, " "cancellations and refunds.",
             )
         ans = None
         if self.llm is not None:
@@ -267,11 +268,7 @@ class AppServer(pb_grpc.ClientServiceServicer):
             support["generated"] = True
             return reply("OK", ans)
         support["fallback"] = True
-        base = (
-            "The FAQ service is not configured."
-            if self.llm is None
-            else "The FAQ service could not be reached."
-        )
+        base = "The FAQ service is not configured." if self.llm is None else "The FAQ service could not be reached."
         text = faq_txt or live
         return reply(
             "LLM_UNAVAILABLE",
@@ -316,9 +313,7 @@ def serve(
     raft=None,
 ):
     srv = grpc.server(futures.ThreadPoolExecutor(max_workers=workers))
-    pb_grpc.add_ClientServiceServicer_to_server(
-        AppServer(app, pay, is_leader, leader_url, llm_url, raft), srv
-    )
+    pb_grpc.add_ClientServiceServicer_to_server(AppServer(app, pay, is_leader, leader_url, llm_url, raft), srv)
     if raft:
         pb_grpc.add_RaftServiceServicer_to_server(RaftService(raft), srv)
     bound = srv.add_insecure_port(f"{bind}:{port}")
@@ -391,9 +386,7 @@ def main():
             {node: addr for node, addr in addrs.items() if node != args.node_id},
             data_dir / "raft.db",
             app.apply_raft,
-            client_peers={
-                node: addr for node, addr in client_addrs.items() if node != args.node_id
-            },
+            client_peers={node: addr for node, addr in client_addrs.items() if node != args.node_id},
         )
         srv, bound = serve(app=app, port=port, llm_url=args.llm_server, bind="[::]", raft=raft)
         print(f"Raft app node {args.node_id} listening on port {bound}")
