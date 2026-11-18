@@ -330,7 +330,8 @@ deployment and documentation across the whole project.
 - Raft core: leader election, log replication, majority commit and the linearizable read
   barrier.
 - gRPC client library and command-line client, including leader redirection and retries.
-- Raft correctness tests, including RPC fault injection and election-churn tests.
+- Separate LLM server: gRPC `LLMService`, Ollama integration, FAQ retrieval with NLTK, domain
+  check and safe fallback.
 
 **Rathul Krishnan**
 - gRPC application server: request routing, follower forwarding and session handling across
@@ -341,8 +342,7 @@ deployment and documentation across the whole project.
 - Integration tests, the stress-testing tool and the Docker verification workflow.
 
 **Mitali Narayan**
-- Separate LLM server: gRPC `LLMService`, Ollama integration, FAQ retrieval with NLTK, domain
-  check and safe fallback.
+- Raft correctness tests, including RPC fault injection and election-churn tests.
 - SQLite catalogue and seed data for shows and FAQs; mock payment, pricing and refund
   handling.
 - Streamlit web UI: Booking view, Cluster Observatory and Demo Lab.
