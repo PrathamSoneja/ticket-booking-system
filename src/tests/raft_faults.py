@@ -1,3 +1,4 @@
+import contextlib
 import random
 import time
 from collections import Counter
@@ -63,10 +64,8 @@ class FaultInjector(grpc.UnaryUnaryClientInterceptor):
             raise InjectedUnavailable()
         if r["dup"]:
             self.stats["dup"] += 1
-            try:
+            with contextlib.suppress(grpc.RpcError):
                 continuation(details, request).result()
-            except grpc.RpcError:
-                pass
         out = continuation(details, request)
         with self.lock:
             stale = self.held.pop(method, None) if r["replay"] else None
@@ -75,18 +74,14 @@ class FaultInjector(grpc.UnaryUnaryClientInterceptor):
         if stale is not None:
             # deliver an older request after a newer one (receiver-side reordering)
             self.stats["reorder"] += 1
-            try:
+            with contextlib.suppress(grpc.RpcError):
                 continuation(details, stale).result()
-            except grpc.RpcError:
-                pass
         if r["post"]:
             time.sleep(r["post"])
         if r["drop_resp"]:
             self.stats["drop_resp"] += 1
-            try:
+            with contextlib.suppress(grpc.RpcError):
                 out.result()
-            except grpc.RpcError:
-                pass
             raise InjectedUnavailable()
         return out
 

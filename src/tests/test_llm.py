@@ -1,18 +1,12 @@
-import sys
 from concurrent import futures
-from pathlib import Path
 from uuid import uuid4
 
 import grpc
 import pytest
 
-GEN = Path(__file__).resolve().parents[1] / "ticket_booking" / "generated"
-if str(GEN) not in sys.path:
-    sys.path.insert(0, str(GEN))
-
-import ticket_booking_pb2 as pb
-import ticket_booking_pb2_grpc as pb_grpc
 from ticket_booking.faq_data import FaqIndex, Topic
+from ticket_booking.generated import ticket_booking_pb2 as pb
+from ticket_booking.generated import ticket_booking_pb2_grpc as pb_grpc
 from ticket_booking.llm_service import LLMService
 
 
@@ -54,14 +48,16 @@ def test_faq_context(llm, query: str, words: list[str]) -> None:
 
 def test_faq_swap() -> None:
     idx = FaqIndex()
-    idx.set_topics([
-        Topic(
-            key="cancel",
-            title="Strict Policy",
-            words=("cancel",),
-            body="Cancellations are permitted up to 48 hours in advance with a 20% penalty fee.",
-        )
-    ])
+    idx.set_topics(
+        [
+            Topic(
+                key="cancel",
+                title="Strict Policy",
+                words=("cancel",),
+                body="Cancellations are permitted up to 48 hours in advance with a 20% penalty fee.",
+            )
+        ]
+    )
     ctx, _ = idx.retrieve("What is the cancellation policy?")
     assert "48 hours" in ctx
     assert "20% penalty fee" in ctx

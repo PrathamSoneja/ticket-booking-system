@@ -2,7 +2,7 @@ import json
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from ticket_booking.client import Client
@@ -49,7 +49,7 @@ class Config:
 
 
 def now_iso():
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
 class Timeline:
@@ -217,7 +217,11 @@ def seat_race(cfg, token, show, seat, n, timeline):
             all(r["status"] == "ALREADY_BOOKED" for r in results if r["status"] != "OK"),
             ", ".join(sorted({r["status"] for r in results if r["status"] != "OK"})) or "none",
         ),
-        ("linearizable read shows seat BOOKED", read_status == "OK" and seat_now == "BOOKED", f"{read_status}/{seat_now}"),
+        (
+            "linearizable read shows seat BOOKED",
+            read_status == "OK" and seat_now == "BOOKED",
+            f"{read_status}/{seat_now}",
+        ),
     ]
     if ok:
         checks.append(
@@ -273,10 +277,16 @@ def watch_failover(cfg, token, old_leader, old_term, timeline, timeout=30.0, int
         old_serving = old_row is not None and old_row.get("role") == "leader" and old_row.get("term") == old_term
         if not old_serving and lost_at is None:
             lost_at = t
-            timeline.add("failover.leader_lost", f"old leader {old_leader} role={old_row.get('role') if old_row else '?'}", node=old_leader)
+            timeline.add(
+                "failover.leader_lost",
+                f"old leader {old_leader} role={old_row.get('role') if old_row else '?'}",
+                node=old_leader,
+            )
         if lost_at is not None and snap["leader"] and snap["leader"] != old_leader and snap["term"] > old_term:
             ms = round((t - lost_at) * 1000)
-            timeline.add("failover.new_leader", f"{snap['leader']} term {snap['term']} after {ms} ms", node=snap["leader"])
+            timeline.add(
+                "failover.new_leader", f"{snap['leader']} term {snap['term']} after {ms} ms", node=snap["leader"]
+            )
             return {"new_leader": snap["leader"], "term": snap["term"], "failover_ms": ms, "snapshot": snap}
         time.sleep(interval)
     timeline.add("failover.timeout", f"no new leader observed within {timeout:.0f}s")

@@ -105,7 +105,9 @@ def read_seat(client, show, seat, deadline=15):
 
 
 def free_slot(client, prefer):
-    for show in [prefer] + [x for x in ["show-1", "show-2", "show-3", "show-4", "show-5", "show-6", "show-7", "show-8"] if x != prefer]:
+    for show in [prefer] + [
+        x for x in ["show-1", "show-2", "show-3", "show-4", "show-5", "show-6", "show-7", "show-8"] if x != prefer
+    ]:
         end = time.monotonic() + 15
         st, seats, _ = client.get_seats(show)
         while st != "OK" and time.monotonic() < end:
@@ -133,7 +135,9 @@ def table(snap):
     out("  |---|---|---|---|---|---|---|---|---|")
     for n, i in snap.items():
         if "role" in i:
-            out(f"  | {n} | {i['role']} | {i['term']} | {i['leader_id']} | {i['log_length']} | {i['commit_index']} | {i['last_applied']} | {i['log_digest']} | {i['state_digest']} |")
+            out(
+                f"  | {n} | {i['role']} | {i['term']} | {i['leader_id']} | {i['log_length']} | {i['commit_index']} | {i['last_applied']} | {i['log_digest']} | {i['state_digest']} |"
+            )
         else:
             out(f"  | {n} | {i.get('rpc_status')} | | | | | | | |")
 
@@ -147,8 +151,14 @@ def main():
     ui_ok = urllib.request.urlopen("http://127.0.0.1:8501/_stcore/health", timeout=5).read().decode().strip()
     check("UI health endpoint", ui_ok == "ok", ui_ok)
     mounts = subprocess.run(["docker", "compose", "ps", "-q", "ui"], capture_output=True, text=True).stdout.strip()
-    insp = subprocess.run(["docker", "inspect", "--format", "{{json .Mounts}}", mounts], capture_output=True, text=True).stdout
-    check("no Docker socket (or any volume) mounted into UI", "docker.sock" not in insp and json.loads(insp or "[]") == [], insp.strip())
+    insp = subprocess.run(
+        ["docker", "inspect", "--format", "{{json .Mounts}}", mounts], capture_output=True, text=True
+    ).stdout
+    check(
+        "no Docker socket (or any volume) mounted into UI",
+        "docker.sock" not in insp and json.loads(insp or "[]") == [],
+        insp.strip(),
+    )
 
     seeds = list(NODES.values())
     client = Client(seeds, timeout=5.0)
@@ -182,7 +192,11 @@ def main():
     compose("stop", SERVICE[lead])
     new, snap = wait_leader(token, exclude=(lead,))
     failover = time.monotonic() - t0
-    check("new leader elected among survivors", new is not None and new != lead, f"{new} after {failover:.2f}s (includes container stop time)")
+    check(
+        "new leader elected among survivors",
+        new is not None and new != lead,
+        f"{new} after {failover:.2f}s (includes container stop time)",
+    )
     st, state = read_seat(client, show1, seat1)
     check(f"read-after-write: {seat1} still BOOKED via new leader", st == "OK" and state == "BOOKED", f"{st}/{state}")
     show2, seat2 = free_slot(client, show1)
@@ -195,7 +209,10 @@ def main():
     wait_healthy([SERVICE[lead]], timeout=60)
     conv, snap = wait_converged(token, timeout=45)
     table(snap)
-    check(f"{lead} rejoined as follower with identical committed log and state", conv and snap[lead].get("role") == "follower")
+    check(
+        f"{lead} rejoined as follower with identical committed log and state",
+        conv and snap[lead].get("role") == "follower",
+    )
 
     out()
     out("## 6. No quorum")
@@ -217,7 +234,11 @@ def main():
     check("retry with same request ID succeeds once quorum returns", st == "OK", f"{st} {bid3}")
     _, rows, _ = client.get_my_bookings()
     mine = [r for r in rows if r["booking_id"] == bid3]
-    check("exactly one booking and one logical charge for that request ID", len(mine) == 1 and mine[0]["charges"] == 1, str(mine))
+    check(
+        "exactly one booking and one logical charge for that request ID",
+        len(mine) == 1 and mine[0]["charges"] == 1,
+        str(mine),
+    )
     compose("start", SERVICE[others[1]])
     wait_healthy([SERVICE[others[1]]], timeout=60)
     conv, snap = wait_converged(token, timeout=45)
@@ -228,13 +249,21 @@ def main():
     faq = Client(seeds, timeout=60.0)
     faq.token = token
     st, text, sup = faq.ask_faq_detailed("How do I cancel a booking?")
-    check("FAQ answered (LLM via gRPC; Ollama runtime reachable) or honestly labelled fallback", st in ("OK", "LLM_UNAVAILABLE"), f"{st}; generated={sup.get('generated')} fallback={sup.get('fallback')} correlation={sup.get('correlation_id')}")
+    check(
+        "FAQ answered (LLM via gRPC; Ollama runtime reachable) or honestly labelled fallback",
+        st in ("OK", "LLM_UNAVAILABLE"),
+        f"{st}; generated={sup.get('generated')} fallback={sup.get('fallback')} correlation={sup.get('correlation_id')}",
+    )
     out(f"  LLM status: {st}; answer starts: {text[:120]!r}")
     st_ood, _, _ = faq.ask_faq_detailed("What is the capital of France?")
     check("out-of-domain query rejected", st_ood == "OUT_OF_DOMAIN", st_ood)
     compose("stop", "llm")
     st, text, sup = faq.ask_faq_detailed("Is payment refundable on cancellation?")
-    check("LLM outage -> labelled verbatim fallback", st == "LLM_UNAVAILABLE" and sup.get("fallback") is True, f"{st}: {text[:100]!r}")
+    check(
+        "LLM outage -> labelled verbatim fallback",
+        st == "LLM_UNAVAILABLE" and sup.get("fallback") is True,
+        f"{st}: {text[:100]!r}",
+    )
     show4, seat4 = free_slot(client, "show-3")
     st, bid4, msg, _ = book(client, show4, seat4)
     check("booking still works while LLM node is down", st == "OK", f"{st} {bid4}")
@@ -245,10 +274,13 @@ def main():
     out("## 8. Full restart persistence (`down` keeps named volumes)")
     before = snapshot(token)
     compose("down", timeout=240)
-    project = json.loads(subprocess.run(["docker", "compose", "config", "--format", "json"], capture_output=True, text=True).stdout)["name"]
+    project = json.loads(
+        subprocess.run(["docker", "compose", "config", "--format", "json"], capture_output=True, text=True).stdout
+    )["name"]
     vols = subprocess.run(
         ["docker", "volume", "ls", "--filter", f"label=com.docker.compose.project={project}", "--format", "{{.Name}}"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     ).stdout.split()
     kept = [v for v in vols if v.endswith(("node-1-data", "node-2-data", "node-3-data"))]
     check("named Raft volumes survive `docker compose down`", len(kept) == 3, str(kept))
@@ -266,7 +298,11 @@ def main():
     conv, after = wait_converged(token2, timeout=45)
     table(after)
     prev = max(i.get("commit_index", 0) for i in before.values())
-    check("committed log replayed (commit index did not go backwards)", conv and min(i["commit_index"] for i in after.values()) >= prev, f"before={prev}")
+    check(
+        "committed log replayed (commit index did not go backwards)",
+        conv and min(i["commit_index"] for i in after.values()) >= prev,
+        f"before={prev}",
+    )
 
     out()
     out(f"## Result: {'ALL CHECKS PASSED' if not FAILED else 'FAILED: ' + '; '.join(FAILED)}")

@@ -1,29 +1,20 @@
 import json
 import os
-import sys
 import urllib.error
 import urllib.request
 from concurrent import futures
-from pathlib import Path
 
 import grpc
 
 from ticket_booking.faq_data import FaqIndex
-
-GEN = Path(__file__).resolve().parent / "generated"
-if str(GEN) not in sys.path:
-    sys.path.insert(0, str(GEN))
-
-import ticket_booking_pb2 as pb
-import ticket_booking_pb2_grpc as pb_grpc
+from ticket_booking.generated import ticket_booking_pb2 as pb
+from ticket_booking.generated import ticket_booking_pb2_grpc as pb_grpc
 
 
 class LLMService(pb_grpc.LLMServiceServicer):
     def __init__(self, faq=None, ollama=None, model=None, timeout=30.0):
         self.faq = faq if faq else FaqIndex()
-        self.ollama = ollama or os.environ.get(
-            "OLLAMA_URL", "http://127.0.0.1:11434/api/generate"
-        )
+        self.ollama = ollama or os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/generate")
         self.model = model or os.environ.get("OLLAMA_MODEL", "llama3.2:1b")
         self.timeout = timeout
 
@@ -31,10 +22,7 @@ class LLMService(pb_grpc.LLMServiceServicer):
         ctx_txt = req.context.strip()
         faq_txt, _ = self.faq.retrieve(req.query)
         if faq_txt:
-            if ctx_txt:
-                ctx_txt = ctx_txt + "\n\n" + faq_txt
-            else:
-                ctx_txt = faq_txt
+            ctx_txt = ctx_txt + "\n\n" + faq_txt if ctx_txt else faq_txt
         prompt = (
             "Source: "
             + ctx_txt

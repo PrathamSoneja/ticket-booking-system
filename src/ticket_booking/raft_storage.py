@@ -92,9 +92,7 @@ class RaftStorage:
 
     def add_entry(self, idx, term, command, payload, req_id):
         with self.lock:
-            self.db.execute(
-                "INSERT INTO log VALUES (?, ?, ?, ?, ?)", (idx, term, command, payload, req_id)
-            )
+            self.db.execute("INSERT INTO log VALUES (?, ?, ?, ?, ?)", (idx, term, command, payload, req_id))
             self.db.commit()
 
     def truncate(self, idx):
