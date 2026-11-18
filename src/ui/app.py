@@ -153,7 +153,23 @@ def booking_view():
             else:
                 ss.pending_rid = None
                 if bstatus == "OK":
-                    st.success(f"Booking confirmed. Booking ID {bid}. Request ID {rid}.")
+                    st.success(f"Booking confirmed. Booking ID {bid}. Request ID {rid}.")
+                    proof = c.last_booking_receipt
+                    if proof and proof.get("committed"):
+                        with st.expander("Raft consensus proof", expanded=True):
+                            st.markdown("**Booking lifecycle**")
+                            st.write("1. Request received and processed by the Raft leader.")
+                            st.write("2. Booking entry appended to the replicated Raft log.")
+                            st.write("3. Majority commitment confirmed; entry applied to the state machine.")
+                            if proof.get("replayed"):
+                                st.info("Idempotent retry: the original committed booking was returned. No duplicate booking was created.")
+                            st.markdown("**Consensus details**")
+                            st.write(f"Leader node: `{proof['leader']}`")
+                            st.write(f"Raft term: `{proof['term']}`")
+                            st.write(f"Booking log index: `{proof['log_index']}`")
+                            st.write(f"Commit index: `{proof['commit_index']}`")
+                            st.write(f"Last applied index: `{proof['last_applied']}`")
+                            st.success("This booking's log entry is committed and applied.")
                 else:
                     show_status(bstatus, bmsg)
 

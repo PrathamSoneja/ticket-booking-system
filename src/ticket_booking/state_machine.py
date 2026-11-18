@@ -21,6 +21,13 @@ class Outcome:
     message: str
     booking_id: str = ""
     txn: str = ""
+    raft_leader: str = ""
+    raft_term: int = 0
+    raft_log_index: int = 0
+    raft_commit_index: int = 0
+    raft_last_applied: int = 0
+    raft_committed: bool = False
+    request_replayed: bool = False
 
 
 @dataclass

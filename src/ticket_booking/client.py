@@ -31,7 +31,8 @@ class Client:
         # 127.0.0.1:5005x) into addresses reachable from where this client runs (e.g. app-2:50051)
         self.redirect_map = dict(redirect_map or {})
         self.token = None
-        self.user = None
+        self.user = None
+        self.last_booking_receipt = None
         self.channel = grpc.insecure_channel(self.addr)
         self.stub = pb_grpc.ClientServiceStub(self.channel)
 
@@ -121,7 +122,7 @@ class Client:
         res = self._call_with_retry("Logout", pb.LogoutRequest(token=self.token))
         if res.status == "OK":
             self.token = None
-            self.user = None
+            self.user = None
             return True, "Logout successful."
         else:
             return False, f"Logout failed: {res.message}"
@@ -200,7 +201,8 @@ class Client:
                 support = json.loads(it.data.decode())
         return res.status, res.message, support
 
-    def _post(self, kind, body, req_id, hops):
+    def _post(self, kind, body, req_id, hops):
+        self.last_booking_receipt = None
         if not self.token:
             return "AUTH_FAILED", "", "Please log in first."
         rid = req_id or str(uuid4())
@@ -221,7 +223,15 @@ class Client:
                     continue
                 raise
             if res.status != "NOT_LEADER" or not res.redirect_to:
-                return res.status, res.booking_id, res.message
+                message = res.message
+                try:
+                    envelope = json.loads(message)
+                    if isinstance(envelope, dict) and envelope.get("_booking_receipt_v1"):
+                        self.last_booking_receipt = envelope.get("receipt")
+                        message = envelope.get("message", message)
+                except (TypeError, ValueError):
+                    pass
+                return res.status, res.booking_id, message
             self._switch_server(res.redirect_to)
             n = n + 1
         return "REDIRECT_FAILED", "", "Exceeded maximum redirect hops to reach cluster leader."

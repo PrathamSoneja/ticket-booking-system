@@ -1,3 +1,4 @@
+import json
 import argparse
 import json
 import logging
@@ -224,7 +225,25 @@ class AppServer(pb_grpc.ClientServiceServicer):
                 )
         else:
             out = self.app.post(req.token, req.type, clean, req.request_id)
-        return pb.StatusResponse(status=out.status, message=out.message, booking_id=out.booking_id)
+        message = out.message
+        if out.raft_log_index:
+            message = json.dumps(
+                {
+                    "_booking_receipt_v1": True,
+                    "message": out.message,
+                    "receipt": {
+                        "leader": out.raft_leader,
+                        "term": out.raft_term,
+                        "log_index": out.raft_log_index,
+                        "commit_index": out.raft_commit_index,
+                        "last_applied": out.raft_last_applied,
+                        "committed": out.raft_committed,
+                        "replayed": out.request_replayed,
+                    },
+                },
+                separators=(",", ":"),
+            )
+        return pb.StatusResponse(status=out.status, message=message, booking_id=out.booking_id)
 
     def _faq(self, params):
         """FAQ boundary. The LLM only ever produces text for this read-only reply: nothing it

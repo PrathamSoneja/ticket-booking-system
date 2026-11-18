@@ -270,11 +270,14 @@ class RaftNode:
             }
         )
 
-    def propose(self, command, payload, req_id, timeout=5.0):
+    def propose(self, command, payload, req_id, timeout=5.0, return_metadata=False):
         end = time.monotonic() + timeout
+
         with self.cv:
             if self.role != "leader":
-                return "NOT_LEADER", None
+                result = ("NOT_LEADER", None)
+                return result + (None,) if return_metadata else result
+
             found = self.req_index.get(req_id)
             if found is None:
                 idx = self.store.last_index + 1
@@ -287,22 +290,59 @@ class RaftNode:
                     idx = self.store.last_index + 1
                     self._append(idx, self.term, command, payload, req_id)
                     self.match_index[self.node_id] = idx
+
             cur_term = self.term
+
+        def response(status, outcome):
+            if not return_metadata:
+                return status, outcome
+
+            with self.cv:
+                committed = (
+                    status == "OK"
+                    and req_id in self.results
+                    and self.commit_index >= idx
+                    and self.last_applied >= idx
+                )
+                metadata = {
+                    "leader": self.node_id,
+                    "term": cur_term,
+                    "log_index": idx,
+                    "commit_index": self.commit_index,
+                    "last_applied": self.last_applied,
+                    "committed": committed,
+                }
+
+            return status, outcome, metadata
+
         self._advance_commit()
         self._replicate_all()
+
         while time.monotonic() < end:
             with self.cv:
-                if req_id in self.results and self.last_applied >= idx:
-                    return "OK", self.results[req_id]
-                if self.role != "leader" or self.term != cur_term:
-                    return "NOT_LEADER", None
-                self.cv.wait(min(0.05, end - time.monotonic()))
-            self._replicate_all()
-        with self.cv:
-            if req_id in self.results and self.last_applied >= idx:
-                return "OK", self.results[req_id]
-            return "NO_QUORUM", None
+                if (
+                    req_id in self.results
+                    and self.commit_index >= idx
+                    and self.last_applied >= idx
+                ):
+                    return response("OK", self.results[req_id])
 
+                if self.role != "leader" or self.term != cur_term:
+                    return response("NOT_LEADER", None)
+
+                self.cv.wait(min(0.05, end - time.monotonic()))
+
+            self._replicate_all()
+
+        with self.cv:
+            if (
+                req_id in self.results
+                and self.commit_index >= idx
+                and self.last_applied >= idx
+            ):
+                return response("OK", self.results[req_id])
+
+            return response("NO_QUORUM", None)
     def read_barrier(self, timeout=2.0):
         """ReadIndex-style linearizable read barrier (Raft paper section 8).
 
