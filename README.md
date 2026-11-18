@@ -137,6 +137,9 @@ src/tests/                  unit, integration, Raft, fault-injection, UI tests
 - My Bookings with charge status; cancel with automatic refund; owner checks (a user cannot
   see or cancel someone else's booking).
 - Idempotent retries via request IDs.
+- **Raft consensus proof** (novelty): every booking reply carries a receipt from the leader
+  (leader, term, log index, commit index, last applied, committed, replayed). The web UI shows it
+  as a booking-lifecycle panel; the CLI prints it after `--action book`.
 - Raft: leader election, log replication, majority commit, persistence, crash recovery,
   follower catch-up, linearizable reads, no-quorum safety.
 - Context-aware FAQ chatbot on a separate LLM server: FAQ retrieval + live seat map, off-topic
@@ -169,10 +172,11 @@ docker compose build
 ```
 
 ```bash
-OLLAMA_URL=http://host.docker.internal:11434/api/generate docker compose up -d
+docker compose up -d
 ```
 
-PowerShell: `$env:OLLAMA_URL="http://host.docker.internal:11434/api/generate"; docker compose up -d`.
+The `llm` service finds Ollama on the host automatically (and falls back to the optional
+`ollama` container), so no environment variable is needed.
 Without host Ollama, run Ollama in a container instead (the first start downloads the Ollama
 image, several GB, and the ~1.3 GB model):
 
@@ -259,7 +263,7 @@ python -m ticket_booking.client --action shows
 |---|---|
 | sign up | `--action signup --username charlie --password GoodPass1` |
 | seats | `--action seats --show-id show-1` |
-| book (up to 5) | `--action book --show-id show-1 --seat-id A1,A2,A3` |
+| book (up to 5) | `--action book --show-id show-1 --seat-id A1,A2,A3` (also prints the Raft receipt) |
 | declined payment | `--action book --show-id show-1 --seat-id A9 --card 4000000000000000` |
 | my bookings | `--action mybookings` |
 | cancel | `--action cancel --booking-id <id>` |
@@ -290,6 +294,13 @@ python src/scripts/verify_docker.py
 
 ```bash
 python src/scripts/verify_ui_docker.py
+```
+
+From `src`, a self-contained end-to-end demo (starts three local nodes, races 10 users for one
+seat, kills the leader, books after failover, restarts the node and checks catch-up):
+
+```bash
+python scripts/m2_demo.py --skip-faq
 ```
 
 From `src`, the basic race/idempotency script:
@@ -337,8 +348,9 @@ deployment and documentation across the whole project.
   check and safe fallback.
 - SQLite catalogue and seed data for shows and FAQs; mock payment, pricing and refund
   handling.
-- Streamlit web UI: Booking view, Cluster Observatory, Demo Lab and the Consensus
-  Transparency novelty view.
+- Streamlit web UI: Booking view, Cluster Observatory and Demo Lab.
+- Raft consensus proof novelty: commit receipt from the leader, booking-lifecycle panel in the
+  UI, and the end-to-end demo script `src/scripts/m2_demo.py`.
 - LLM, payment and UI tests, and the UI verification workflow.
 
 ## 7. Security notes and limitations

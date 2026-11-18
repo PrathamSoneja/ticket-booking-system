@@ -1,4 +1,3 @@
-
 import argparse
 import socket
 import subprocess
@@ -13,7 +12,6 @@ SRC = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SRC))
 
 from ticket_booking.client import Client
-
 
 PYTHON = sys.executable
 PASSWORD = "PassDemo123"
@@ -30,9 +28,7 @@ def wait_port(port, timeout=20):
 
     while time.time() < deadline:
         try:
-            with socket.create_connection(
-                ("127.0.0.1", port), timeout=0.5
-            ):
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
                 return True
         except OSError:
             time.sleep(0.25)
@@ -165,9 +161,7 @@ def print_logs(log_dir):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="End-to-end three-node Raft M2 demonstration"
-    )
+    parser = argparse.ArgumentParser(description="End-to-end three-node Raft M2 demonstration")
 
     parser.add_argument(
         "--workers",
@@ -191,10 +185,7 @@ def main():
     log_dir = SRC / "scripts" / "m2_demo_logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(
-        prefix="ticket_m2_"
-    ) as temporary:
-
+    with tempfile.TemporaryDirectory(prefix="ticket_m2_") as temporary:
         root = Path(temporary)
         data_dir = root / "data"
         data_dir.mkdir()
@@ -207,22 +198,16 @@ def main():
             "node-3",
         ]
 
-        addresses = {
-            node: f"127.0.0.1:{port}"
-            for node, port in zip(node_ids, ports)
-        }
+        addresses = {node: f"127.0.0.1:{port}" for node, port in zip(node_ids, ports, strict=False)}
 
-        peers = ",".join(
-            f"{node}={addresses[node]}"
-            for node in node_ids
-        )
+        peers = ",".join(f"{node}={addresses[node]}" for node in node_ids)
 
         token = None
 
         try:
             print("\n=== PHASE 1: START THREE RAFT NODES ===")
 
-            for node, port in zip(node_ids, ports):
+            for node, port in zip(node_ids, ports, strict=False):
                 process, log = start_node(
                     node,
                     port,
@@ -234,33 +219,22 @@ def main():
                 processes[node] = process
                 logs[node] = log
 
-            for node, port in zip(node_ids, ports):
+            for node, port in zip(node_ids, ports, strict=False):
                 if not wait_port(port):
-                    raise RuntimeError(
-                        f"{node} did not start on port {port}"
-                    )
+                    raise RuntimeError(f"{node} did not start on port {port}")
 
-                print(
-                    f"PASS: {node} listening on port {port}"
-                )
+                print(f"PASS: {node} listening on port {port}")
 
             print("Waiting for initial leader election...")
             time.sleep(5)
 
-            print(
-                "\n=== PHASE 2: CONCURRENT SAME-SEAT BOOKING ==="
-            )
+            print("\n=== PHASE 2: CONCURRENT SAME-SEAT BOOKING ===")
 
-            print(
-                f"Testing {args.workers} users against show-1/A1"
-            )
+            print(f"Testing {args.workers} users against show-1/A1")
 
             results = []
 
-            with ThreadPoolExecutor(
-                max_workers=args.workers
-            ) as pool:
-
+            with ThreadPoolExecutor(max_workers=args.workers) as pool:
                 futures = [
                     pool.submit(
                         signup_and_book,
@@ -277,25 +251,12 @@ def main():
                     results.append(result)
                     print(result)
 
-            successes = sum(
-                1 for status, _ in results
-                if status == "OK"
-            )
+            successes = sum(1 for status, _ in results if status == "OK")
 
-            conflicts = sum(
-                1 for status, _ in results
-                if status == "ALREADY_BOOKED"
-            )
+            conflicts = sum(1 for status, _ in results if status == "ALREADY_BOOKED")
 
-            if (
-                successes != 1
-                or conflicts != args.workers - 1
-            ):
-                raise RuntimeError(
-                    "Concurrency check failed: "
-                    f"{successes} successes, "
-                    f"{conflicts} conflicts"
-                )
+            if successes != 1 or conflicts != args.workers - 1:
+                raise RuntimeError("Concurrency check failed: " f"{successes} successes, " f"{conflicts} conflicts")
 
             print("PASS: exactly one user booked A1")
 
@@ -309,9 +270,7 @@ def main():
             )
 
             if not ok:
-                raise RuntimeError(
-                    f"Login failed: {message}"
-                )
+                raise RuntimeError(f"Login failed: {message}")
 
             token = client.token
 
@@ -323,9 +282,7 @@ def main():
             )
 
             if not leader_id:
-                raise RuntimeError(
-                    "No Raft leader found"
-                )
+                raise RuntimeError("No Raft leader found")
 
             print(f"PASS: leader is {leader_id}")
             print("Leader status:", details)
@@ -339,10 +296,7 @@ def main():
                         show_id="show-1",
                     )
 
-                    if (
-                        answer
-                        and not answer.startswith("FAQ failed")
-                    ):
+                    if answer and not answer.startswith("FAQ failed"):
                         print("FAQ response:", answer)
                         print("PASS: FAQ request completed")
                     else:
@@ -378,13 +332,9 @@ def main():
             )
 
             if not new_leader:
-                raise RuntimeError(
-                    "No replacement leader elected after failure"
-                )
+                raise RuntimeError("No replacement leader elected after failure")
 
-            print(
-                f"PASS: replacement leader is {new_leader}"
-            )
+            print(f"PASS: replacement leader is {new_leader}")
 
             print("New leader status:", new_details)
 
@@ -400,9 +350,7 @@ def main():
             )
 
             if not ok:
-                raise RuntimeError(
-                    f"Login after failover failed: {message}"
-                )
+                raise RuntimeError(f"Login after failover failed: {message}")
 
             status, booking_id, message = client.book_seat(
                 "show-1",
@@ -417,14 +365,9 @@ def main():
             )
 
             if status != "OK":
-                raise RuntimeError(
-                    "Booking after failover failed: "
-                    f"{status} {message}"
-                )
+                raise RuntimeError("Booking after failover failed: " f"{status} {message}")
 
-            print(
-                "PASS: new booking committed after leader failure"
-            )
+            print("PASS: new booking committed after leader failure")
 
             client.close()
 
@@ -433,17 +376,11 @@ def main():
                 token,
             )
 
-            target_commit = (
-                leader_status.get("commit_index", 0)
-                if leader_status
-                else 0
-            )
+            target_commit = leader_status.get("commit_index", 0) if leader_status else 0
 
             print("\n=== PHASE 7: RESTART FAILED NODE ===")
 
-            failed_port = int(
-                addresses[failed_node].rsplit(":", 1)[1]
-            )
+            failed_port = int(addresses[failed_node].rsplit(":", 1)[1])
 
             process, log = start_node(
                 failed_node,
@@ -457,9 +394,7 @@ def main():
             logs[failed_node] = log
 
             if not wait_port(failed_port):
-                raise RuntimeError(
-                    "Restarted node did not become reachable"
-                )
+                raise RuntimeError("Restarted node did not become reachable")
 
             caught_up = False
             deadline = time.time() + 30
@@ -476,10 +411,7 @@ def main():
                         0,
                     )
 
-                    if (
-                        recovered.get("role") == "follower"
-                        and applied >= target_commit
-                    ):
+                    if recovered.get("role") == "follower" and applied >= target_commit:
                         caught_up = True
 
                         print(
@@ -492,15 +424,9 @@ def main():
                 time.sleep(0.5)
 
             if not caught_up:
-                raise RuntimeError(
-                    "Restarted node did not catch up "
-                    f"to committed index {target_commit}"
-                )
+                raise RuntimeError("Restarted node did not catch up " f"to committed index {target_commit}")
 
-            print(
-                "PASS: restarted node caught up "
-                "with committed entries"
-            )
+            print("PASS: restarted node caught up " "with committed entries")
 
             print("\n=== M2 DEMO RESULT ===")
             print("PASS: three-node cluster startup")

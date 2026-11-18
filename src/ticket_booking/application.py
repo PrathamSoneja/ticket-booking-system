@@ -1,6 +1,6 @@
-from dataclasses import replace
 import json
 import math
+from dataclasses import replace
 from hashlib import sha256
 from uuid import NAMESPACE_URL, uuid5
 
@@ -228,6 +228,7 @@ class BookingApp:
             raft_last_applied=proof["last_applied"],
             raft_committed=proof["committed"],
         )
+
     def apply_raft(self, kind, payload, req_id):
         if kind == "NOOP":
             return Outcome("OK", "No-op committed for read barrier.")

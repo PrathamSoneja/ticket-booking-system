@@ -1,4 +1,4 @@
-﻿import sys
+import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -172,7 +172,9 @@ def checkout(c, show_id, picked):
                 st.write("2. Booking entry appended to the replicated Raft log.")
                 st.write("3. Majority commitment confirmed; entry applied to the state machine.")
                 if proof.get("replayed"):
-                    st.info("Idempotent retry: the original committed booking was returned. No duplicate booking was created.")
+                    st.info(
+                        "Idempotent retry: the original committed booking was returned. No duplicate booking was created."
+                    )
                 st.markdown("**Consensus details**")
                 st.write(f"Leader node: `{proof['leader']}`")
                 st.write(f"Raft term: `{proof['term']}`")
@@ -460,4 +462,3 @@ elif view == "Cluster Observatory":
     observatory_view()
 else:
     demo_lab_view()
-

@@ -242,10 +242,7 @@ class RaftNode:
 
             with self.cv:
                 committed = (
-                    status == "OK"
-                    and req_id in self.results
-                    and self.commit_index >= idx
-                    and self.last_applied >= idx
+                    status == "OK" and req_id in self.results and self.commit_index >= idx and self.last_applied >= idx
                 )
                 metadata = {
                     "leader": self.node_id,
@@ -263,11 +260,7 @@ class RaftNode:
 
         while time.monotonic() < end:
             with self.cv:
-                if (
-                    req_id in self.results
-                    and self.commit_index >= idx
-                    and self.last_applied >= idx
-                ):
+                if req_id in self.results and self.commit_index >= idx and self.last_applied >= idx:
                     return response("OK", self.results[req_id])
 
                 if self.role != "leader" or self.term != cur_term:
@@ -278,14 +271,11 @@ class RaftNode:
             self._replicate_all()
 
         with self.cv:
-            if (
-                req_id in self.results
-                and self.commit_index >= idx
-                and self.last_applied >= idx
-            ):
+            if req_id in self.results and self.commit_index >= idx and self.last_applied >= idx:
                 return response("OK", self.results[req_id])
 
             return response("NO_QUORUM", None)
+
     def read_barrier(self, timeout=2.0):
         """ReadIndex-style linearizable read barrier (Raft paper section 8).
 

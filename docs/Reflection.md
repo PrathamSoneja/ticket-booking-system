@@ -69,8 +69,9 @@ to end and reviewed, tested and debugged the others' work.
   check and safe fallback.
 - SQLite catalogue and seed data for shows and FAQs; mock payment, pricing and refund
   handling.
-- Streamlit web UI: Booking view, Cluster Observatory, Demo Lab, and the Consensus
-  Transparency novelty view.
+- Streamlit web UI: Booking view, Cluster Observatory and Demo Lab.
+- Raft consensus proof novelty: commit receipt returned by the leader, booking-lifecycle panel
+  in the UI, and the end-to-end demo script `m2_demo.py`.
 - LLM, payment and UI tests, and the UI verification workflow.
 
 **Learnings**

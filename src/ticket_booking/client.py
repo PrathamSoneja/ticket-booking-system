@@ -1,4 +1,4 @@
-﻿import argparse
+import argparse
 import json
 import time
 from types import SimpleNamespace
@@ -125,6 +125,7 @@ class Client:
             return True, "Logout successful."
         else:
             return False, f"Logout failed: {res.message}"
+
     def get_shows(self):
         if not self.token:
             return "AUTH_FAILED", [], "Please log in first."
@@ -295,6 +296,8 @@ def main():
         print(c.get_seats(args.show_id))
     elif args.action == "book":
         print(c.book_seat(args.show_id, args.seat_id, card=args.card))
+        if c.last_booking_receipt:
+            print("Raft receipt:", c.last_booking_receipt)
     elif args.action == "cancel":
         print(c.cancel_seat(args.booking_id))
     elif args.action == "mybookings":
@@ -310,6 +313,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
