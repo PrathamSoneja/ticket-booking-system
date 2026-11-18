@@ -229,8 +229,6 @@ class AppServer(pb_grpc.ClientServiceServicer):
         return pb.StatusResponse(status=out.status, message=message, booking_id=out.booking_id)
 
     def _faq(self, params):
-        """FAQ boundary. The LLM only ever produces text for this read-only reply: nothing it
-        returns is parsed or applied to booking, payment or auth state."""
         q = params.get("query", "").strip()
         if not q:
             return pb.GetResponse(status="INVALID_REQUEST", message="FAQ requests require a query parameter.")

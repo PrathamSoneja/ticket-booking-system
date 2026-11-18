@@ -277,14 +277,6 @@ class RaftNode:
             return response("NO_QUORUM", None)
 
     def read_barrier(self, timeout=2.0):
-        """ReadIndex-style linearizable read barrier (Raft paper section 8).
-
-        Returns "OK" only when (1) this node is leader and has committed an entry from its
-        current term, (2) a majority (counting itself) acknowledged its leadership for that term
-        in a heartbeat round started *after* the read index was recorded, and (3) the state
-        machine has applied at least up to that read index. Otherwise returns "NOT_LEADER" or
-        "NO_QUORUM"; the caller must not serve the read.
-        """
         end = time.monotonic() + timeout
         with self.cv:
             if self.role != "leader":
