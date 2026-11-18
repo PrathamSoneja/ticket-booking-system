@@ -1,18 +1,3 @@
-# Local Milestone 2 topology: 1 LLM node, 3 Raft application nodes, 1 UI/client node.
-# All five services run the same image (ticket-booking:m2) with different commands.
-#
-#   docker compose up -d --build        build + start (named volumes are kept)
-#   docker compose down                 stop + remove containers, KEEP Raft volumes
-#   docker compose down -v              DESTRUCTIVE: also deletes all Raft logs/state
-#
-# LLM model runtime (Ollama) -- see README section "Docker". The llm service tries, in order,
-# Ollama on the host (host.docker.internal:11434) and the optional ollama container, so no
-# environment variable is needed:
-#   * host Ollama:       docker compose up -d
-#   * containerised:     docker compose --profile ollama up -d   (pulls the model on first start)
-#   * neither:           FAQ answers fall back to verbatim FAQ text, labelled as not AI-generated.
-# Set OLLAMA_URL (comma-separated list allowed) only to point somewhere else.
-
 x-image: &image
   image: ticket-booking:m2
   build:
@@ -122,9 +107,7 @@ services:
       - --server.headless=true
       - --browser.gatherUsageStats=false
     environment:
-      # gRPC addresses of the Raft nodes as seen from inside the compose network
       TB_NODES: node-1=app-1:50051,node-2=app-2:50051,node-3=app-3:50051
-      # leaders advertise host-facing addresses; translate them for this container
       TB_REDIRECT_MAP: 127.0.0.1:50051=app-1:50051,127.0.0.1:50052=app-2:50051,127.0.0.1:50053=app-3:50051
       TB_COMPOSE_SERVICES: node-1=app-1,node-2=app-2,node-3=app-3
     ports:

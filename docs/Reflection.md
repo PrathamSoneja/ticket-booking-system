@@ -17,7 +17,8 @@ to end and reviewed, tested and debugged the others' work.
 - Raft core: leader election, log replication, majority commit and the linearizable read
   barrier.
 - gRPC client library and command-line client, including leader redirection and retries.
-- Raft correctness tests, including RPC fault injection and election-churn tests.
+- Separate LLM server: gRPC `LLMService`, Ollama integration, FAQ retrieval with NLTK, domain
+  check and safe fallback.
 
 **Learnings**
 - A single lock is easy; several locks need a global order. Sorting seat keys before locking
@@ -27,12 +28,14 @@ to end and reviewed, tested and debugged the others' work.
 - Reads are as hard as writes. A leader that has been cut off still believes it is leader;
   confirming leadership with a majority before answering (ReadIndex) was needed to avoid stale
   seat maps.
-- Fault injection (delayed, dropped, duplicated and reordered RPCs) found problems that normal
-  tests never exercised.
+- A small local model becomes useful and domain-specific when it is given the right context:
+  retrieving FAQ text and the live seat map mattered more than the model size.
+- The LLM must never be on the critical path: bookings keep working when it is down, and its
+  output is treated as text only, never as a command.
 
 **Challenges**
-- Designing tests that stay meaningful under random timing: tests check invariants (one leader
-  per term, no overbooking, identical logs) rather than exact timings.
+- Keeping a 1-billion-parameter CPU model accurate: the prompt restricts it to the retrieved
+  source at temperature 0, and off-topic questions are refused before the model is called.
 
 ---
 
@@ -65,8 +68,7 @@ to end and reviewed, tested and debugged the others' work.
 ## Mitali Narayan
 
 **Contributions**
-- Separate LLM server: gRPC `LLMService`, Ollama integration, FAQ retrieval with NLTK, domain
-  check and safe fallback.
+- Raft correctness tests, including RPC fault injection and election-churn tests.
 - SQLite catalogue and seed data for shows and FAQs; mock payment, pricing and refund
   handling.
 - Streamlit web UI: Booking view, Cluster Observatory and Demo Lab.
@@ -75,10 +77,8 @@ to end and reviewed, tested and debugged the others' work.
 - LLM, payment and UI tests, and the UI verification workflow.
 
 **Learnings**
-- A small local model becomes useful and domain-specific when it is given the right context:
-  retrieving FAQ text and the live seat map mattered more than the model size.
-- The LLM must never be on the critical path: bookings keep working when it is down, and its
-  output is treated as text only, never as a command.
+- Fault injection (delayed, dropped, duplicated and reordered RPCs) found problems that normal
+  tests never exercised.
 - Payments in a replicated system must be deterministic: the leader decides, and the decision
   travels in the log so every replica records the same charge exactly once.
 - A UI that only uses the public gRPC API cannot bypass consensus, and showing the cluster's
@@ -87,6 +87,8 @@ to end and reviewed, tested and debugged the others' work.
 **Challenges**
 - Showing consensus to a user in a way that is accurate: every value displayed comes from a
   real RPC response, and an unreachable node is never shown as a follower.
+- Designing tests that stay meaningful under random timing: tests check invariants (one leader
+  per term, no overbooking, identical logs) rather than exact timings.
 
 ---
 
