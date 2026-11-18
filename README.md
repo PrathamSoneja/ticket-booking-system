@@ -12,11 +12,8 @@ the **Raft consensus algorithm**, so the system keeps working, and never double-
 when a server (including the leader) crashes. All services talk to each other over **gRPC**,
 and everything is written in **Python**.
 
-A detailed explanation of every concept and component is in
-[docs/Project_Explanation.md](docs/Project_Explanation.md). Exact steps for recording the demo
-are in [docs/Demo_Recording_Steps.md](docs/Demo_Recording_Steps.md). The slide deck is
-[docs/AOS_Project_Presentation.pptx](docs/AOS_Project_Presentation.pptx), and individual
-contributions and learnings are in [docs/Reflection.md](docs/Reflection.md).
+The slide deck is [docs/AOS_Project_Presentation.pptx](docs/AOS_Project_Presentation.pptx), and
+individual contributions and learnings are in [docs/Reflection.md](docs/Reflection.md).
 
 ---
 
